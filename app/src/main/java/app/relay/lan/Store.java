@@ -34,6 +34,38 @@ final class Store {
     prefs.edit().putBoolean("available", b).apply();
   }
 
+  String automaticSound() {
+    return prefs.getString("automaticSound", null);
+  }
+
+  void automaticSound(String uri) {
+    prefs.edit().putString("automaticSound", uri == null ? "" : uri).apply();
+  }
+
+  int automaticSoundSeconds() {
+    return prefs.getInt("automaticSoundSeconds", 5);
+  }
+
+  void automaticSoundSeconds(int seconds) {
+    prefs.edit().putInt("automaticSoundSeconds", seconds).apply();
+  }
+
+  boolean turnEndBeep() {
+    return prefs.getBoolean("turnEndBeep", true);
+  }
+
+  void turnEndBeep(boolean enabled) {
+    prefs.edit().putBoolean("turnEndBeep", enabled).apply();
+  }
+
+  boolean turnEndVibration() {
+    return prefs.getBoolean("turnEndVibration", true);
+  }
+
+  void turnEndVibration(boolean enabled) {
+    prefs.edit().putBoolean("turnEndVibration", enabled).apply();
+  }
+
   synchronized JSONArray contacts() {
     try {
       return new JSONArray(prefs.getString("contacts", "[]"));

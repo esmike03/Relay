@@ -29,7 +29,9 @@ public class RelayService extends Service {
   Channel session;
   String state = "idle", peerName = "", peerFp = "", direction = "", callId = "";
   long callTime, acceptedAt;
-  boolean speaker = true, remoteRecording = false, remoteTalking = false;
+  boolean speaker = true, remoteRecording = false;
+  volatile boolean remoteTalking;
+  boolean headsetRoute;
   volatile boolean talking;
   volatile AudioRecord mic;
   volatile AudioTrack track;
@@ -46,9 +48,12 @@ public class RelayService extends Service {
   long lastJournal;
   volatile boolean capturing;
   boolean microphoneEnabled;
+  boolean automaticAlertPending;
   boolean shortcutHeld;
   int port = 52743;
   Ringtone ring;
+  Ringtone automaticChime;
+  Runnable automaticChimeStart;
   AudioFocusRequest focus;
 
   void changed() {
@@ -93,6 +98,20 @@ public class RelayService extends Service {
         new NotificationChannel("calls", "Incoming calls", NotificationManager.IMPORTANCE_HIGH);
     calls.enableVibration(true);
     nm.createNotificationChannel(calls);
+    NotificationChannel automaticCalls =
+        new NotificationChannel(
+            "automatic_calls", "Automatic call alerts", NotificationManager.IMPORTANCE_HIGH);
+    automaticCalls.setDescription("A short chime when a trusted device connects automatically");
+    automaticCalls.setSound(
+        android.net.Uri.parse("android.resource://" + getPackageName() + "/raw/automatic_call"),
+        new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build());
+    automaticCalls.enableVibration(true);
+    automaticCalls.setVibrationPattern(new long[] {0, 200});
+    nm.createNotificationChannel(automaticCalls);
+    nm.cancel(4);
     idleForeground();
     workers.execute(
         () -> {
@@ -246,6 +265,91 @@ public class RelayService extends Service {
     if (ring != null) {
       ring.stop();
       ring = null;
+    }
+  }
+
+  void notifyAutomaticCall() {
+    NotificationManager notifications = getSystemService(NotificationManager.class);
+    notifications.notify(
+        4,
+        new Notification.Builder(this, "automatic_calls")
+            .setSmallIcon(R.drawable.ic_relay_status)
+            .setContentTitle(peerName + " connected automatically")
+            .setContentText("Local call connected · tap to open Relay")
+            .setCategory(Notification.CATEGORY_CALL)
+            .setContentIntent(activity("open", 8))
+            .setOnlyAlertOnce(true)
+            // The call's audio route plays the chime; keep the visual alert quiet.
+            .setGroup("relay_automatic_call")
+            .setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY)
+            .setAutoCancel(true)
+            .setTimeoutAfter(8000)
+            .build());
+    NotificationChannel channel = notifications.getNotificationChannel("automatic_calls");
+    if (channel == null
+        || !notifications.areNotificationsEnabled()
+        || channel.getImportance() == NotificationManager.IMPORTANCE_NONE
+        || (notifications.getCurrentInterruptionFilter()
+                != NotificationManager.INTERRUPTION_FILTER_ALL
+            && !channel.canBypassDnd())) return;
+    AudioManager audio = getSystemService(AudioManager.class);
+    if (audio.getRingerMode() == AudioManager.RINGER_MODE_SILENT) return;
+    if (channel.shouldVibrate())
+      getSystemService(Vibrator.class)
+          .vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE));
+    String selected = store.automaticSound();
+    android.net.Uri sound =
+        selected == null
+            ? channel.getSound()
+            : selected.isEmpty() ? null : android.net.Uri.parse(selected);
+    if (audio.getRingerMode() != AudioManager.RINGER_MODE_NORMAL
+        || audio.getStreamVolume(AudioManager.STREAM_RING) == 0
+        || sound == null) return;
+    playAutomaticChime(sound, callId, 0);
+  }
+
+  void playAutomaticChime(android.net.Uri sound, String expectedCall, int attempts) {
+    if (session == null || !state.equals("active") || !callId.equals(expectedCall)) return;
+    AudioManager audio = getSystemService(AudioManager.class);
+    if (audio.getRingerMode() != AudioManager.RINGER_MODE_NORMAL
+        || audio.getStreamVolume(AudioManager.STREAM_RING) == 0) return;
+    if (headsetRoute
+        && Build.VERSION.SDK_INT >= 31
+        && !isHeadset(audio.getCommunicationDevice())
+        && attempts < 12) {
+      automaticChimeStart = () -> playAutomaticChime(sound, expectedCall, attempts + 1);
+      main.postDelayed(automaticChimeStart, 250);
+      return;
+    }
+    try {
+      stopAutomaticAlert();
+      automaticChime = RingtoneManager.getRingtone(this, sound);
+      if (automaticChime == null) return;
+      automaticChime.setAudioAttributes(
+          new AudioAttributes.Builder()
+              .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+              .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+              .build());
+      if (Build.VERSION.SDK_INT >= 28) automaticChime.setLooping(false);
+      automaticChime.play();
+      main.postDelayed(stopAutomaticChime, store.automaticSoundSeconds() * 1000L);
+    } catch (Exception e) {
+      stopAutomaticAlert();
+      android.util.Log.w("Relay", "Automatic call sound unavailable", e);
+    }
+  }
+
+  final Runnable stopAutomaticChime = this::stopAutomaticAlert;
+
+  void stopAutomaticAlert() {
+    if (automaticChimeStart != null) {
+      main.removeCallbacks(automaticChimeStart);
+      automaticChimeStart = null;
+    }
+    main.removeCallbacks(stopAutomaticChime);
+    if (automaticChime != null) {
+      automaticChime.stop();
+      automaticChime = null;
     }
   }
 
@@ -621,6 +725,10 @@ public class RelayService extends Service {
       case "ready":
         if (state.equals("acceptedWaiting")) {
           state = "active";
+          if (automaticAlertPending) {
+            automaticAlertPending = false;
+            notifyAutomaticCall();
+          }
           changed();
         }
         break;
@@ -631,14 +739,8 @@ public class RelayService extends Service {
             c.close();
             return;
           }
-          if (SystemClock.elapsedRealtime() - c.audioWindow > 1000) {
-            c.audioWindow = SystemClock.elapsedRealtime();
-            c.audioCount = 0;
-          }
-          if (++c.audioCount > 70) {
-            c.close();
-            return;
-          }
+          if (++c.receivedAudioFrames % 250 == 0)
+            android.util.Log.i("Relay", "Audio received frames=" + c.receivedAudioFrames);
           AudioTrack out = track;
           if (out != null)
             workersAudio.execute(
@@ -652,11 +754,13 @@ public class RelayService extends Service {
         }
         break;
       case "talk":
+        boolean wasRemoteTalking = remoteTalking;
         remoteTalking = j.optBoolean("on");
         if (remoteTalking && talking) {
           if (identity.fingerprint.compareTo(c.fp) > 0) talk(false);
           else remoteTalking = false;
         }
+        if (wasRemoteTalking && !j.optBoolean("on") && state.equals("active")) notifyTurnEnd();
         changed();
         break;
       case "record":
@@ -697,6 +801,50 @@ public class RelayService extends Service {
           TimeUnit.SECONDS,
           new ArrayBlockingQueue<>(8),
           new ThreadPoolExecutor.DiscardOldestPolicy());
+
+  void notifyTurnEnd() {
+    AudioTrack output = track;
+    if (output == null || (!store.turnEndBeep() && !store.turnEndVibration())) return;
+    // Use the same ordered output as speech, so the cue follows its final frame
+    // and keeps the selected headset/speaker route. Cues are not recorded.
+    workersAudio.execute(
+        () -> {
+          if (track != output || remoteTalking || talking) return;
+          AudioManager audio = getSystemService(AudioManager.class);
+          NotificationManager notifications = getSystemService(NotificationManager.class);
+          int ringer = audio.getRingerMode();
+          if (ringer == AudioManager.RINGER_MODE_SILENT
+              || notifications.getCurrentInterruptionFilter()
+                  != NotificationManager.INTERRUPTION_FILTER_ALL) return;
+          if (store.turnEndVibration()) {
+            Vibrator vibrator = getSystemService(Vibrator.class);
+            if (vibrator != null && vibrator.hasVibrator()) {
+              vibrator.vibrate(
+                  VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE));
+              android.util.Log.i("Relay", "Turn-end vibration");
+            }
+          }
+          if (!store.turnEndBeep()
+              || ringer != AudioManager.RINGER_MODE_NORMAL
+              || audio.getStreamVolume(AudioManager.STREAM_RING) == 0
+              || audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL) == 0) return;
+          try {
+            int offset = 0;
+            while (offset < TurnEndTone.PCM.length
+                && track == output
+                && !remoteTalking
+                && !talking) {
+              int written = output.write(TurnEndTone.PCM, offset, TurnEndTone.PCM.length - offset);
+              if (written <= 0) return;
+              offset += written;
+            }
+            if (offset == TurnEndTone.PCM.length)
+              android.util.Log.i("Relay", "Turn-end beep queued");
+          } catch (Exception e) {
+            if (track == output) android.util.Log.w("Relay", "Turn-end beep unavailable", e);
+          }
+        });
+  }
 
   void approvePair() {
     if (!state.equals("pairIncoming")) return;
@@ -739,6 +887,7 @@ public class RelayService extends Service {
       stopRing();
       acceptedAt = System.currentTimeMillis();
       state = incoming ? "acceptedWaiting" : "active";
+      automaticAlertPending = incoming && automatic;
       persistCall();
       session.send(Store.json("type", incoming ? "accept" : "ready"));
       changed();
@@ -768,7 +917,7 @@ public class RelayService extends Service {
     if (am.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
       throw new IOException("Another app is using call audio");
     am.setMode(AudioManager.MODE_IN_COMMUNICATION);
-    am.setSpeakerphoneOn(speaker);
+    if (!selectHeadset(am)) am.setSpeakerphoneOn(speaker);
     int min =
         AudioTrack.getMinBufferSize(
             16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -797,8 +946,49 @@ public class RelayService extends Service {
 
   void speaker(boolean b) {
     speaker = b;
-    getSystemService(AudioManager.class).setSpeakerphoneOn(b);
+    AudioManager audio = getSystemService(AudioManager.class);
+    if (b || !selectHeadset(audio)) {
+      headsetRoute = false;
+      audio.setSpeakerphoneOn(b);
+    }
     changed();
+  }
+
+  static boolean isHeadset(AudioDeviceInfo device) {
+    if (device == null) return false;
+    int type = device.getType();
+    return type == AudioDeviceInfo.TYPE_WIRED_HEADSET
+        || type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+        || type == AudioDeviceInfo.TYPE_USB_HEADSET
+        || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+        || type == AudioDeviceInfo.TYPE_BLE_HEADSET
+        || type == AudioDeviceInfo.TYPE_HEARING_AID;
+  }
+
+  boolean selectHeadset(AudioManager audio) {
+    headsetRoute = false;
+    if (Build.VERSION.SDK_INT >= 31) {
+      for (AudioDeviceInfo device : audio.getAvailableCommunicationDevices()) {
+        if (isHeadset(device) && audio.setCommunicationDevice(device)) {
+          headsetRoute = true;
+          speaker = false;
+          return true;
+        }
+      }
+    } else {
+      for (AudioDeviceInfo device : audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+        int type = device.getType();
+        if (type == AudioDeviceInfo.TYPE_WIRED_HEADSET
+            || type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+            || type == AudioDeviceInfo.TYPE_USB_HEADSET) {
+          audio.setSpeakerphoneOn(false);
+          headsetRoute = true;
+          speaker = false;
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   void talk(boolean on) {
@@ -810,7 +1000,7 @@ public class RelayService extends Service {
           a.stop();
         } catch (Exception ignored) {
         }
-      if (session != null) session.send(Store.json("type", "talk", "on", false));
+      // The capture thread sends the release after its final audio packet.
       return;
     }
     if (!state.equals("active") || talking || capturing || remoteTalking || !microphoneEnabled)
@@ -842,6 +1032,7 @@ public class RelayService extends Service {
                 if (!talking) return;
                 a.startRecording();
                 byte[] buf = new byte[640];
+                int sentFrames = 0;
                 while (talking && session == c) {
                   int offset = 0;
                   while (offset < buf.length && talking) {
@@ -857,6 +1048,8 @@ public class RelayService extends Service {
                             "audio",
                             "data",
                             android.util.Base64.encodeToString(buf, android.util.Base64.NO_WRAP)));
+                    if (++sentFrames % 250 == 0)
+                      android.util.Log.i("Relay", "Audio sent frames=" + sentFrames);
                   }
                 }
               } catch (Exception e) {
@@ -871,8 +1064,8 @@ public class RelayService extends Service {
                 }
                 mic = null;
                 talking = false;
-                capturing = false;
                 c.send(Store.json("type", "talk", "on", false));
+                capturing = false;
               }
             },
             "relay-microphone")
@@ -945,6 +1138,10 @@ public class RelayService extends Service {
   }
 
   void end(String result, boolean send) {
+    android.util.Log.i("Relay", "Call ended: " + result + "; state=" + state);
+    stopAutomaticAlert();
+    automaticAlertPending = false;
+    getSystemService(NotificationManager.class).cancel(4);
     connectionAttempt++;
     Channel c = session;
     if (c == null) {
@@ -1002,8 +1199,10 @@ public class RelayService extends Service {
     if (wake != null && wake.isHeld()) wake.release();
     wake = null;
     AudioManager am = getSystemService(AudioManager.class);
+    if (Build.VERSION.SDK_INT >= 31) am.clearCommunicationDevice();
     am.setMode(AudioManager.MODE_NORMAL);
     am.setSpeakerphoneOn(false);
+    headsetRoute = false;
     if (focus != null) {
       am.abandonAudioFocusRequest(focus);
       focus = null;
@@ -1067,14 +1266,15 @@ public class RelayService extends Service {
     final ArrayBlockingQueue<JSONObject> queue = new ArrayBlockingQueue<>(128);
     volatile boolean closed = false, drain = false;
     volatile long lastRead = System.currentTimeMillis();
-    long lastPing = 0, audioWindow = 0;
-    int audioCount = 0, remotePort = 52743;
+    long lastPing = 0;
+    int receivedAudioFrames = 0, remotePort = 52743;
 
     Channel(SSLSocket s) throws Exception {
       socket = s;
       host = s.getInetAddress().getHostAddress();
       fp = Identity.fingerprint(s.getSession().getPeerCertificates()[0]);
       s.setSoTimeout(20000);
+      s.setTcpNoDelay(true);
       in = new DataInputStream(s.getInputStream());
       out = new DataOutputStream(s.getOutputStream());
     }
@@ -1094,7 +1294,8 @@ public class RelayService extends Service {
                     out.write(bytes);
                     out.flush();
                   }
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                  if (!closed) android.util.Log.w("Relay", "Channel send failed", e);
                 } finally {
                   close();
                 }
@@ -1103,21 +1304,24 @@ public class RelayService extends Service {
           .start();
       new Thread(
               () -> {
-                long window = SystemClock.elapsedRealtime();
-                int count = 0;
+                long now = SystemClock.elapsedRealtime();
+                PacketRateLimiter packets = new PacketRateLimiter(256, 100, now);
+                // Microphones produce 50 frames/second. Wi-Fi can batch frames;
+                // assess their sustained rate on the reader, not delayed UI callbacks.
+                PacketRateLimiter audio = new PacketRateLimiter(150, 70, now);
                 try {
                   while (!closed) {
                     int size = in.readInt();
                     if (size < 2 || size > 16384) throw new IOException("Bad packet size");
-                    if (SystemClock.elapsedRealtime() - window > 1000) {
-                      window = SystemClock.elapsedRealtime();
-                      count = 0;
-                    }
-                    if (++count > 100) throw new IOException("Packet rate exceeded");
+                    if (!packets.acquire(SystemClock.elapsedRealtime()))
+                      throw new IOException("Sustained packet rate exceeded");
                     byte[] bytes = new byte[size];
                     in.readFully(bytes);
                     JSONObject j =
                         new JSONObject(new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+                    if (j.optString("type").equals("audio")
+                        && !audio.acquire(SystemClock.elapsedRealtime()))
+                      throw new IOException("Sustained audio rate exceeded");
                     lastRead = System.currentTimeMillis();
                     main.post(
                         () -> {
@@ -1125,11 +1329,13 @@ public class RelayService extends Service {
                             try {
                               receive(this, j);
                             } catch (Exception e) {
+                              android.util.Log.w("Relay", "Packet handling failed", e);
                               close();
                             }
                         });
                   }
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                  if (!closed) android.util.Log.w("Relay", "Channel receive failed", e);
                 } finally {
                   close();
                 }
@@ -1139,7 +1345,10 @@ public class RelayService extends Service {
     }
 
     void send(JSONObject j) {
-      if (!closed && !queue.offer(j)) close();
+      if (!closed && !queue.offer(j)) {
+        android.util.Log.w("Relay", "Channel send queue full");
+        close();
+      }
     }
 
     void closeAfterWrite() {
@@ -1167,4 +1376,3 @@ public class RelayService extends Service {
     }
   }
 }
-

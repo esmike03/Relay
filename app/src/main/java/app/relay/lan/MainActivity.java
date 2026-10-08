@@ -7,7 +7,11 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.*;
 import android.provider.Settings;
@@ -32,6 +36,8 @@ public class MainActivity extends Activity {
   Button talkButton, recordButton, speakerButton;
   CosmicDrawable.Orb talkOrb;
   MediaPlayer player;
+  Ringtone alertPreview;
+  final Runnable stopAlertPreview = this::stopAlertPreview;
   boolean visible = false, answerPending = false, startPending = false;
   final Handler handler = new Handler(Looper.getMainLooper());
   final Runnable poll =
@@ -96,6 +102,7 @@ public class MainActivity extends Activity {
     RelayService s = RelayService.instance;
     if (s != null) s.talk(false);
     stopPlayer();
+    stopAlertPreview();
     super.onPause();
   }
 
@@ -256,6 +263,7 @@ public class MainActivity extends Activity {
   void refresh() {
     RelayService s = RelayService.instance;
     String state = s == null ? "offline" : s.state;
+    if (!state.equals("idle") && !state.equals("offline")) stopAlertPreview();
     if (s != null
         && (state.equals("active") || state.equals("acceptedWaiting"))
         && audioPermission()) s.enableMicrophone();
@@ -317,7 +325,7 @@ public class MainActivity extends Activity {
                   : "Encrypted · only paired devices");
       callRecording.setTextColor(s.recorder != null || s.remoteRecording ? LIME : 0xffb4c8c0);
       updateText(recordButton, s.recorder == null ? "Record call" : "Stop recording");
-      updateText(speakerButton, s.speaker ? "Speaker on" : "Earpiece");
+      updateText(speakerButton, s.speaker ? "Speaker on" : s.headsetRoute ? "Headset" : "Earpiece");
       updateText(callError, s.error);
       callError.setVisibility(s.error.isEmpty() ? View.GONE : View.VISIBLE);
     }
@@ -620,6 +628,12 @@ public class MainActivity extends Activity {
   @Override
   protected void onActivityResult(int request, int result, Intent data) {
     super.onActivityResult(request, result, data);
+    if (request == 31 && result == RESULT_OK && data != null) {
+      Uri picked = data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI);
+      store.automaticSound(picked == null ? "" : picked.toString());
+      automaticSoundSettings();
+      return;
+    }
     if (request == 30 && result == RESULT_OK && data != null) {
       try {
         JSONObject peer = PairingQr.parse(data.getStringExtra("pairing"));
@@ -1035,6 +1049,37 @@ public class MainActivity extends Activity {
           renderKey = "";
         });
     addButton(availability, "Background call settings", BG, INK, this::backgroundSettings);
+    addButton(availability, "Automatic call sound", BG, INK, this::automaticSoundSettings);
+
+    LinearLayout feedback = card(content, Color.WHITE);
+    feedback.addView(text("Call feedback", 19, INK, true));
+    gap(feedback, 6);
+    feedback.addView(
+        text(
+            "Hear a short beep or feel a vibration when the other person releases Talk."
+                + " Vibrate mode uses vibration only; silent and Do Not Disturb suppress both.",
+            14,
+            MUTED,
+            false));
+    addButton(
+        feedback,
+        "Turn-end beep · " + (store.turnEndBeep() ? "On" : "Off"),
+        BG,
+        INK,
+        () -> {
+          store.turnEndBeep(!store.turnEndBeep());
+          renderKey = "";
+        });
+
+    addButton(
+        feedback,
+        "Turn-end vibration · " + (store.turnEndVibration() ? "On" : "Off"),
+        BG,
+        INK,
+        () -> {
+          store.turnEndVibration(!store.turnEndVibration());
+          renderKey = "";
+        });
 
     LinearLayout shortcuts = card(content, Color.WHITE);
     shortcuts.addView(text("Button shortcuts", 19, INK, true));
@@ -1095,9 +1140,149 @@ public class MainActivity extends Activity {
         .show();
   }
 
+  Uri automaticSoundUri() {
+    String selected = store.automaticSound();
+    if (selected != null) return selected.isEmpty() ? null : Uri.parse(selected);
+    NotificationChannel channel =
+        getSystemService(NotificationManager.class).getNotificationChannel("automatic_calls");
+    return channel == null
+        ? Uri.parse("android.resource://" + getPackageName() + "/raw/automatic_call")
+        : channel.getSound();
+  }
+
+  void automaticSoundSettings() {
+    Uri sound = automaticSoundUri();
+    String title = "Silent";
+    if (sound != null) {
+      if ("android.resource".equals(sound.getScheme())) title = "Relay chime";
+      else {
+        Ringtone tone = RingtoneManager.getRingtone(this, sound);
+        title = tone == null ? "Selected sound" : tone.getTitle(this);
+      }
+    }
+    LinearLayout body = column();
+    body.addView(text("Selected · " + title, 16, INK, true));
+    gap(body, 10);
+    body.addView(
+        text(
+            "Plays once when a trusted device connects automatically. Uses your call audio output"
+                + " and respects silent/vibrate and Do Not Disturb.",
+            14,
+            MUTED,
+            false));
+    AlertDialog[] dialog = new AlertDialog[1];
+    addButton(
+        body,
+        "Choose sound",
+        LIME,
+        INK,
+        () -> {
+          dialog[0].dismiss();
+          chooseAutomaticSound();
+        });
+    addButton(body, "Preview sound", BG, INK, this::previewAutomaticSound);
+    addButton(
+        body,
+        "Alert length · up to " + store.automaticSoundSeconds() + " seconds",
+        BG,
+        INK,
+        () -> {
+          dialog[0].dismiss();
+          new RelayDialog.Builder(this)
+              .setTitle("Maximum alert length")
+              .setMessage("Short sounds finish naturally. Longer tones stop after this time.")
+              .setItems(
+                  new String[] {"3 seconds", "5 seconds", "8 seconds"},
+                  (d, which) -> {
+                    store.automaticSoundSeconds(new int[] {3, 5, 8}[which]);
+                    automaticSoundSettings();
+                  })
+              .setNegativeButton("Cancel", null)
+              .show();
+        });
+    addButton(
+        body,
+        "Use Relay chime",
+        BG,
+        INK,
+        () -> {
+          stopAlertPreview();
+          store.automaticSound("android.resource://" + getPackageName() + "/raw/automatic_call");
+          dialog[0].dismiss();
+          automaticSoundSettings();
+        });
+    dialog[0] =
+        new RelayDialog.Builder(this)
+            .setTitle("Automatic call sound")
+            .setView(body)
+            .setNegativeButton("Done", null)
+            .create();
+    dialog[0].setOnDismissListener(d -> stopAlertPreview());
+    dialog[0].show();
+  }
+
+  void chooseAutomaticSound() {
+    try {
+      startActivityForResult(
+          new Intent(RingtoneManager.ACTION_RINGTONE_PICKER)
+              .putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALL)
+              .putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Automatic call sound")
+              .putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+              .putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+              .putExtra(
+                  RingtoneManager.EXTRA_RINGTONE_DEFAULT_URI,
+                  RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
+              .putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, automaticSoundUri()),
+          31);
+    } catch (ActivityNotFoundException e) {
+      toast("This phone has no sound picker. You can still use the Relay chime.");
+      automaticSoundSettings();
+    }
+  }
+
+  void previewAutomaticSound() {
+    stopAlertPreview();
+    Uri sound = automaticSoundUri();
+    if (sound == null) {
+      toast("Silent is selected");
+      return;
+    }
+    AudioManager audio = getSystemService(AudioManager.class);
+    if (audio.getRingerMode() != AudioManager.RINGER_MODE_NORMAL
+        || audio.getStreamVolume(AudioManager.STREAM_RING) == 0) {
+      toast("Enable ringing on your phone to preview the alert");
+      return;
+    }
+    try {
+      alertPreview = RingtoneManager.getRingtone(this, sound);
+      if (alertPreview == null) throw new IllegalStateException("Sound unavailable");
+      alertPreview.setAudioAttributes(
+          new AudioAttributes.Builder()
+              .setUsage(AudioAttributes.USAGE_MEDIA)
+              .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+              .build());
+      if (Build.VERSION.SDK_INT >= 28) alertPreview.setLooping(false);
+      alertPreview.play();
+      handler.postDelayed(stopAlertPreview, store.automaticSoundSeconds() * 1000L);
+    } catch (Exception e) {
+      stopAlertPreview();
+      toast("Could not preview this sound. Please choose another.");
+    }
+  }
+
+  void stopAlertPreview() {
+    handler.removeCallbacks(stopAlertPreview);
+    if (alertPreview != null) {
+      alertPreview.stop();
+      alertPreview = null;
+    }
+  }
+
   void backgroundSettings() {
     ArrayList<String> items =
-        new ArrayList<>(Arrays.asList("Battery settings", "Notification settings"));
+        new ArrayList<>(
+            Arrays.asList(
+                "Battery settings", "Notification settings", "Automatic call alert sound"));
     if (Build.VERSION.SDK_INT >= 34) items.add("Incoming call screen permission");
     new RelayDialog.Builder(this)
         .setTitle("Receive calls in the background")
@@ -1113,6 +1298,7 @@ public class MainActivity extends Activity {
                 startActivity(
                     new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                         .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+              else if (which == 2) automaticSoundSettings();
               else
                 startActivity(
                     new Intent(

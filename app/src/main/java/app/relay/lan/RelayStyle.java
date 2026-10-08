@@ -43,6 +43,7 @@ final class RelayStyle {
     if (s.contains("delete") || s.contains("forget")) return "delete";
     if (s.contains("end call") || s.contains("decline")) return "end";
     if (s.contains("record")) return "record";
+    if (s.contains("sound") || s.contains("alert") || s.contains("preview")) return "bell";
     if (s.contains("speaker") || s.contains("earpiece") || s.contains("volume")) return "speaker";
     if (s.contains("talk") || s.contains("transmitting")) return "mic";
     if (s.contains("flashlight")) return "flash";

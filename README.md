@@ -2,6 +2,14 @@
 
 A working native Android app for private, one-to-one push-to-talk calls on a local network. No account, cloud backend, analytics, subscription, or internet connection is required.
 
+Version **1.7** adds a short two-note beep and a 120 ms vibration on the receiving device when the other person releases Talk. Both are enabled by default and have separate On/Off controls in **Settings → Call feedback**. The beep follows the last voice packet through the same headset/speaker output. Vibrate mode produces vibration only; silent mode and Do Not Disturb suppress both. Muted ring/call volume also suppresses the beep. Duplicate release messages, a local release, and ending the call do not create extra cues. The beep is not included in saved recordings.
+
+The TC25-to-Redmi buffered-audio disconnect fix from **1.5** remains: packet limits allow bounded bursts while still rejecting sustained excessive traffic, and are checked on the network reader independently of UI delays. TCP sends use no-delay mode for voice packets.
+
+Automatic call alerts include a sound picker, Preview button, and a maximum alert length of 3, 5, or 8 seconds in **Settings → Automatic call sound**. Pick a notification, ringtone, or alarm tone, choose Silent, or return to the Relay chime. The receiving device plays the chosen sound once when an agreed automatic call connects, through its call audio output. Silent/vibrate, muted ring volume, notification settings, and Do Not Disturb are respected. The visual alert clears after eight seconds or when the call ends; the sound also stops when the call ends.
+
+On Android 12 and later, Relay selects a connected call-capable Bluetooth, wired, or USB headset when starting call audio; older versions automatically select connected wired/USB headsets. The audio button displays **Headset** when selected and can switch to the speaker. Bluetooth route selection is cleared when the call ends. Headset compatibility depends on Android's available communication devices. Alert loudness follows call volume; Preview uses media volume.
+
 Version **1.2** brings a cosmic glass theme: an indigo-to-purple aurora background, translucent cards, lavender/mint accents, soft shadows, and consistent line icons. The circular Talk control gently breathes and turns mint while transmitting; it respects Android's animator setting. Native gradients create the frosted effect on older phones without requiring live backdrop blur. Compact cards, grouped settings, and keyboard-aware dialogs keep the controls usable on the TC25's smaller display.
 
 ## Get started
@@ -49,14 +57,14 @@ The listener uses battery while available. **Go offline** closes it. Reconnect d
 
 Record only when all participants agree. Relay signals recording to the other device; it does not remotely prevent modified clients or external recorders from recording. Files stay in Android's private app storage and are protected by the device's storage security; they do not have an additional app-level encryption layer. Sharing deliberately gives your chosen receiving app access to that WAV file. Uninstalling removes app history and recordings.
 
-This version handles one peer per call. Group channels, Bluetooth pairing, cloud/push delivery, cellular calls, and cross-subnet routing are not implemented. Wired/Bluetooth headset routing, extended overnight standby, and other manufacturers need additional device testing.
+This version handles one peer per call. Group channels, Bluetooth pairing between Relay peers, cloud/push delivery, cellular calls, and cross-subnet routing are not implemented. Additional headset models, extended overnight standby, and other manufacturers need additional device testing.
 
 ## Build and source
 
 Open this directory in Android Studio. The checked-in Gradle wrapper uses Gradle 8.13 and Android Gradle Plugin 8.13.2. Install JDK 17 and Android SDK platform 35. Android Studio can create `local.properties` for your SDK path.
 
 ```powershell
-.\gradlew.bat assembleDebug lintDebug
+.\gradlew.bat assembleDebug testDebugUnitTest lintDebug
 ```
 
 The APK appears in `app/build/outputs/apk/debug/app-debug.apk`. `Relay.apk` is a signed **development/test build**, not a Play Store release. Rebuilding with a different debug signing key requires uninstalling the existing build or using the original signing key, which affects saved contacts/history. For distribution, configure a private release signing key, review current store requirements, and test on additional devices. Signing secrets are not included in the source archive.
@@ -67,7 +75,7 @@ See `TESTING.md` for the device tests and remaining validation scope.
 
 ## Automatic answering and button shortcuts
 
-Open the **•••** menu beside a trusted contact and choose **Automatic answering**. Tap **Request agreement**; the other device must explicitly tap **Agree and enable**. Once both peers acknowledge, calls between those devices connect automatically on speaker. The microphone remains off until TALK is held. Open the same menu and choose **Revoke agreement** to return to manual answering. Revocation takes effect locally immediately; the remote peer is notified when reachable. A normal call also carries the caller's current agreement state, so a revoked agreement cannot silently enable auto-answer again.
+Open the **•••** menu beside a trusted contact and choose **Automatic answering**. Tap **Request agreement**; the other device must explicitly tap **Agree and enable**. Once both peers acknowledge, calls between those devices connect automatically, preferring a supported connected headset. The microphone remains off until TALK is held. Open the same menu and choose **Revoke agreement** to return to manual answering. Revocation takes effect locally immediately; the remote peer is notified when reachable. A normal call also carries the caller's current agreement state, so a revoked agreement cannot silently enable auto-answer again.
 
 In **Settings → Button shortcuts**, configure each volume key as **System volume**, **Answer call**, **Hold to talk**, or **End/decline call**. Defaults are volume up to answer and volume down to hold TALK. These shortcuts work on the visible call screen.
 
