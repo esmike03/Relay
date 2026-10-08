@@ -1,0 +1,9 @@
+plugins { id 'com.android.application' }
+dependencies { implementation 'com.google.zxing:core:3.5.3' }
+android {
+    namespace 'app.relay.lan'
+    compileSdk 35
+    defaultConfig { applicationId 'app.relay.lan'; minSdk 26; targetSdk 35; versionCode 3; versionName '1.2' }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+}
