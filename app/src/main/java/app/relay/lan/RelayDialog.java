@@ -32,8 +32,13 @@ final class RelayDialog extends AlertDialog {
   }
 
   static Button button(Context c, String label, int bg, int fg) {
-    if (fg == MainActivity.INK && bg != MainActivity.LIME) fg = MainActivity.TEXT;
-    if (bg == MainActivity.RED) fg = MainActivity.INK;
+    boolean solid =
+        bg == MainActivity.ACCENT
+            || bg == MainActivity.INK
+            || bg == MainActivity.RED
+            || bg == MainActivity.MINT;
+    if (solid) fg = Color.WHITE;
+    else if (fg == Color.WHITE) fg = MainActivity.INK;
     Button b = new Button(c);
     b.setText(label);
     b.setAllCaps(false);
@@ -45,7 +50,7 @@ final class RelayDialog extends AlertDialog {
     b.setMinWidth(0);
     b.setMinimumWidth(0);
     b.setMinHeight(RelayStyle.dp(c, 48));
-    b.setStateListAnimator(null);
+    RelayStyle.press(b);
     b.setElevation(0);
     b.setPadding(
         (int) (14 * c.getResources().getDisplayMetrics().density),
@@ -54,7 +59,9 @@ final class RelayDialog extends AlertDialog {
         (int) (12 * c.getResources().getDisplayMetrics().density));
     b.setBackground(
         new RippleDrawable(
-            ColorStateList.valueOf(0x33d1c3f7), shape(c, bg, 15), shape(c, Color.WHITE, 15)));
+            ColorStateList.valueOf(solid ? 0x33ffffff : 0x1f15172b),
+            shape(c, bg, 16),
+            shape(c, Color.WHITE, 16)));
     if (!label.equals("×")) {
       b.setCompoundDrawablesRelativeWithIntrinsicBounds(
           RelayStyle.icon(c, RelayStyle.iconFor(label), fg, 20), null, null, null);
@@ -94,14 +101,17 @@ final class RelayDialog extends AlertDialog {
     Context c = getContext();
     shell = new LinearLayout(c);
     shell.setOrientation(LinearLayout.VERTICAL);
-    shell.setPadding(dp(20), dp(18), dp(20), dp(18));
-    shell.setBackground(new CosmicDrawable.Glass(dp(26), false, true));
-    RelayStyle.shadow(shell, 8);
+    shell.setPadding(dp(22), dp(18), dp(22), dp(20));
+    GradientDrawable panel = new GradientDrawable();
+    panel.setColor(Color.WHITE);
+    panel.setCornerRadius(dp(28));
+    shell.setBackground(panel);
+    RelayStyle.shadow(shell, 12);
     LinearLayout brand = new LinearLayout(c);
     brand.setGravity(Gravity.CENTER_VERTICAL);
     TextView tag = text("RELAY", 11, MainActivity.MUTED, true);
     tag.setCompoundDrawablesRelativeWithIntrinsicBounds(
-        RelayStyle.icon(c, "radio", MainActivity.TEXT, 18), null, null, null);
+        RelayStyle.icon(c, "radio", MainActivity.ACCENT, 18), null, null, null);
     tag.setCompoundDrawablePadding(dp(8));
     brand.addView(tag, new LinearLayout.LayoutParams(0, -2, 1));
     ImageButton close = new ImageButton(c);
@@ -109,7 +119,7 @@ final class RelayDialog extends AlertDialog {
     close.setScaleType(ImageView.ScaleType.CENTER);
     close.setBackground(
         new RippleDrawable(
-            ColorStateList.valueOf(0x223c5f49), shape(c, MainActivity.BG, 14), null));
+            ColorStateList.valueOf(0x1f15172b), shape(c, MainActivity.BG, 20), null));
     close.setPadding(0, 0, 0, 0);
     close.setContentDescription("Close dialog");
     close.setOnClickListener(v -> cancel());
@@ -142,7 +152,7 @@ final class RelayDialog extends AlertDialog {
         final int index = i;
         Button item = button(c, spec.items[i], MainActivity.BG, MainActivity.INK);
         item.setCompoundDrawablesRelativeWithIntrinsicBounds(
-            RelayStyle.icon(c, RelayStyle.iconFor(spec.items[i]), MainActivity.TEXT, 20), null,
+            RelayStyle.icon(c, RelayStyle.iconFor(spec.items[i]), MainActivity.ACCENT, 20), null,
             RelayStyle.icon(c, "chevron", MainActivity.MUTED, 16), null);
         item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         item.setOnClickListener(
@@ -162,7 +172,7 @@ final class RelayDialog extends AlertDialog {
           button(
               c,
               spec.positive.toString(),
-              danger ? MainActivity.RED : MainActivity.LIME,
+              danger ? MainActivity.RED : MainActivity.ACCENT,
               danger ? Color.WHITE : MainActivity.INK);
       positive.setOnClickListener(
           v -> {
@@ -173,7 +183,7 @@ final class RelayDialog extends AlertDialog {
     }
     if (spec.negative != null) {
       gap(footer, 9);
-      negative = button(c, spec.negative.toString(), 0xffe6ebe3, MainActivity.INK);
+      negative = button(c, spec.negative.toString(), MainActivity.BG, MainActivity.INK);
       negative.setOnClickListener(
           v -> {
             if (spec.negativeClick != null) spec.negativeClick.onClick(this, BUTTON_NEGATIVE);
@@ -194,7 +204,7 @@ final class RelayDialog extends AlertDialog {
         .setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
     WindowManager.LayoutParams w = getWindow().getAttributes();
-    w.dimAmount = .48f;
+    w.dimAmount = .36f;
     w.gravity = Gravity.CENTER;
     getWindow().setAttributes(w);
   }
@@ -205,6 +215,10 @@ final class RelayDialog extends AlertDialog {
     getWindow().setLayout(Math.min(width, dp(430)), WindowManager.LayoutParams.WRAP_CONTENT);
     shell.getViewTreeObserver().addOnGlobalLayoutListener(this::fitToVisibleWindow);
     shell.post(this::fitToVisibleWindow);
+    shell.setAlpha(0);
+    shell.setScaleX(.96f);
+    shell.setScaleY(.96f);
+    shell.animate().alpha(1).scaleX(1).scaleY(1).setDuration(180).start();
   }
 
   void fitToVisibleWindow() {

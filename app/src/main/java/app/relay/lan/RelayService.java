@@ -33,6 +33,8 @@ public class RelayService extends Service {
   volatile boolean remoteTalking;
   boolean headsetRoute;
   volatile boolean talking;
+  /** Loudness of the latest sent and received audio frames, 0 to 1, for the soundwave. */
+  volatile float micLevel, remoteLevel;
   volatile AudioRecord mic;
   volatile AudioTrack track;
   volatile WavRecorder recorder;
@@ -747,6 +749,7 @@ public class RelayService extends Service {
                 () -> {
                   try {
                     record(pcm, false);
+                    remoteLevel = level(pcm);
                     out.write(pcm, 0, pcm.length);
                   } catch (Exception ignored) {
                   }
@@ -1042,6 +1045,7 @@ public class RelayService extends Service {
                   }
                   if (offset == 640 && talking) {
                     record(buf, true);
+                    micLevel = level(buf);
                     c.send(
                         Store.json(
                             "type",
@@ -1070,6 +1074,16 @@ public class RelayService extends Service {
             },
             "relay-microphone")
         .start();
+  }
+
+  /** Peak of a 16-bit little-endian PCM frame, eased so quiet speech is still visible. */
+  static float level(byte[] pcm) {
+    int peak = 0;
+    for (int i = 0; i + 1 < pcm.length; i += 2) {
+      int sample = Math.abs((short) ((pcm[i] & 0xff) | (pcm[i + 1] << 8)));
+      if (sample > peak) peak = sample;
+    }
+    return (float) Math.sqrt(Math.min(1f, peak / 32768f));
   }
 
   void record(byte[] pcm, boolean local) {

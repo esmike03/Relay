@@ -23,18 +23,25 @@ import java.util.*;
 import org.json.*;
 
 public class MainActivity extends Activity {
-  static final int INK = 0xff241c43,
-      MUTED = 0xffc3bad7,
-      BG = 0xff17182f,
-      LIME = 0xffd6c6f3,
-      TEXT = 0xfff4effc,
-      RED = 0xffe9a0b4;
+  // INK is the text colour and the dark button fill; BG fills secondary buttons and fields.
+  static final int INK = 0xff15172b,
+      MUTED = 0xff6c7189,
+      BG = 0xfff1f2f9,
+      ACCENT = 0xff5b5fe0,
+      TEXT = INK,
+      RED = 0xffe5484d,
+      PAGE = 0xfff7f8fc,
+      MINT = 0xff10a37f,
+      SOFT = 0xffecedfd,
+      RED_SOFT = 0xfffdecee,
+      LINE = 0xffe6e8f1;
   Store store;
   LinearLayout root, content;
-  String tab = "Devices", renderKey = "";
+  String tab = "Devices", renderKey = "", shownScreen = "";
   TextView callClock, callHint, callRecording, callError;
   Button talkButton, recordButton, speakerButton;
-  CosmicDrawable.Orb talkOrb;
+  RelayArt.Orb talkOrb;
+  WaveView callWave;
   MediaPlayer player;
   Ringtone alertPreview;
   final Runnable stopAlertPreview = this::stopAlertPreview;
@@ -53,10 +60,12 @@ public class MainActivity extends Activity {
   public void onCreate(Bundle b) {
     super.onCreate(b);
     store = new Store(this);
-    getWindow().setStatusBarColor(BG);
-    getWindow().setNavigationBarColor(BG);
-    getWindow().getDecorView().setSystemUiVisibility(0);
-    if (Build.VERSION.SDK_INT >= 26) getWindow().getDecorView().setSystemUiVisibility(0);
+    getWindow().setStatusBarColor(PAGE);
+    getWindow().setNavigationBarColor(PAGE);
+    getWindow()
+        .getDecorView()
+        .setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     if (Build.VERSION.SDK_INT >= 27) {
       setShowWhenLocked(false);
       setTurnScreenOn(false);
@@ -212,8 +221,8 @@ public class MainActivity extends Activity {
   LinearLayout card(LinearLayout into, int color) {
     LinearLayout l = column();
     l.setPadding(dp(18), dp(18), dp(18), dp(18));
-    l.setBackground(RelayStyle.surface(this, color, 22));
-    RelayStyle.shadow(l, 3);
+    l.setBackground(RelayStyle.surface(this, color, 24));
+    RelayStyle.shadow(l, color == ACCENT ? 8 : 3);
     into.addView(l, new LinearLayout.LayoutParams(-1, -2));
     gap(into, 14);
     return l;
@@ -227,35 +236,76 @@ public class MainActivity extends Activity {
 
   void addButton(LinearLayout l, String title, int bg, int fg, Runnable run) {
     gap(l, 10);
-    l.addView(button(title, bg, fg, run), new LinearLayout.LayoutParams(-1, -2));
+    Button b = button(title, bg, fg, run);
+    if (bg == BG) {
+      // Secondary actions read as list rows: icon, label, chevron.
+      b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+      b.setCompoundDrawablesRelativeWithIntrinsicBounds(
+          RelayStyle.icon(this, RelayStyle.iconFor(title), ACCENT, 20),
+          null,
+          RelayStyle.icon(this, "chevron", MUTED, 16),
+          null);
+    }
+    l.addView(b, new LinearLayout.LayoutParams(-1, -2));
   }
 
-  void deviceHeader(LinearLayout into, String name, String detail, Runnable more) {
+  TextView centered(TextView v) {
+    v.setGravity(Gravity.CENTER_HORIZONTAL);
+    return v;
+  }
+
+  TextView avatar(String name, int size, int textSize) {
+    TextView a =
+        text(
+            name.isEmpty() ? "R" : name.substring(0, 1).toUpperCase(Locale.ROOT),
+            textSize,
+            ACCENT,
+            true);
+    a.setGravity(Gravity.CENTER);
+    a.setBackground(RelayStyle.surface(this, SOFT, size / 2));
+    return a;
+  }
+
+  /** A round, icon-only button. */
+  Button iconButton(String icon, int size, int bg, int fg, String description, Runnable action) {
+    Button b = button("", bg, fg, action);
+    b.setTextSize(0);
+    b.setMinHeight(0);
+    b.setMinimumHeight(0);
+    b.setPadding(dp((size - 20) / 2), 0, 0, 0);
+    b.setCompoundDrawablePadding(0);
+    b.setCompoundDrawablesRelativeWithIntrinsicBounds(
+        RelayStyle.icon(this, icon, fg, 20), null, null, null);
+    b.setBackground(
+        new android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(0x2215172b),
+            RelayStyle.surface(this, bg, size / 2),
+            RelayStyle.surface(this, Color.WHITE, size / 2)));
+    b.setContentDescription(description);
+    return b;
+  }
+
+  void deviceHeader(LinearLayout into, String name, String detail, Runnable call, Runnable more) {
     LinearLayout line = new LinearLayout(this);
     line.setGravity(Gravity.CENTER_VERTICAL);
-    TextView avatar =
-        text(name.isEmpty() ? "R" : name.substring(0, 1).toUpperCase(Locale.ROOT), 20, INK, true);
-    avatar.setGravity(Gravity.CENTER);
-    avatar.setTextColor(INK);
-    avatar.setBackground(RelayStyle.surface(this, LIME, 16));
-    line.addView(avatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    line.addView(avatar(name, 46, 19), new LinearLayout.LayoutParams(dp(46), dp(46)));
     LinearLayout label = column();
-    TextView title = text(name, 18, INK, true);
+    TextView title = text(name, 17, INK, true);
     title.setMaxLines(2);
     title.setEllipsize(android.text.TextUtils.TruncateAt.END);
     label.addView(title);
-    label.addView(text(detail, 12, MUTED, false));
+    label.addView(text(detail, 13, MUTED, false));
     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
     lp.setMargins(dp(12), 0, dp(6), 0);
     line.addView(label, lp);
+    if (call != null)
+      line.addView(
+          iconButton("phone", 46, ACCENT, Color.WHITE, "Call " + name, call),
+          new LinearLayout.LayoutParams(dp(46), dp(46)));
     if (more != null) {
-      Button options = button("", BG, INK, more);
-      options.setTextSize(0);
-      options.setPadding(dp(14), 0, dp(14), 0);
-      options.setCompoundDrawablesRelativeWithIntrinsicBounds(
-          RelayStyle.icon(this, "more", TEXT, 20), null, null, null);
-      options.setContentDescription("Options for " + name);
-      line.addView(options, new LinearLayout.LayoutParams(dp(48), dp(48)));
+      LinearLayout.LayoutParams options = new LinearLayout.LayoutParams(dp(40), dp(46));
+      options.leftMargin = dp(4);
+      line.addView(iconButton("more", 40, 0x00ffffff, MUTED, "Options for " + name, more), options);
     }
     into.addView(line, new LinearLayout.LayoutParams(-1, -2));
   }
@@ -323,7 +373,8 @@ public class MainActivity extends Activity {
               : s.remoteRecording
                   ? "● The other device is recording"
                   : "Encrypted · only paired devices");
-      callRecording.setTextColor(s.recorder != null || s.remoteRecording ? LIME : 0xffb4c8c0);
+      callRecording.setTextColor(s.recorder != null || s.remoteRecording ? RED : MUTED);
+      if (callWave != null) callWave.setColor(s.talking ? MINT : ACCENT);
       updateText(recordButton, s.recorder == null ? "Record call" : "Stop recording");
       updateText(speakerButton, s.speaker ? "Speaker on" : s.headsetRoute ? "Headset" : "Earpiece");
       updateText(callError, s.error);
@@ -337,49 +388,53 @@ public class MainActivity extends Activity {
 
   void render(RelayService s, String state) {
     callClock = null;
+    callWave = null;
     root = column();
     root.setClipChildren(true);
-    root.setBackground(new CosmicDrawable());
-    root.setPadding(dp(18), dp(8), dp(18), dp(8));
+    root.setBackground(new RelayArt.Backdrop());
+    root.setPadding(dp(20), dp(10), dp(20), dp(10));
     if (Build.VERSION.SDK_INT >= 35)
       root.setOnApplyWindowInsetsListener(
           (v, insets) -> {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-            v.setPadding(dp(18), bars.top + dp(8), dp(18), bars.bottom + dp(8));
+            v.setPadding(dp(20), bars.top + dp(10), dp(20), bars.bottom + dp(10));
             return insets;
           });
     setContentView(root);
     root.requestApplyInsets();
     LinearLayout top = new LinearLayout(this);
     top.setGravity(Gravity.CENTER_VERTICAL);
+    ImageView mark = new ImageView(this);
+    mark.setImageDrawable(RelayStyle.icon(this, "radio", Color.WHITE, 22));
+    mark.setScaleType(ImageView.ScaleType.CENTER);
+    mark.setBackground(RelayStyle.surface(this, ACCENT, 13));
+    top.addView(mark, new LinearLayout.LayoutParams(dp(40), dp(40)));
     TextView logo = text("relay", 23, INK, true);
-    logo.setCompoundDrawablesRelativeWithIntrinsicBounds(
-        RelayStyle.icon(this, "radio", TEXT, 26), null, null, null);
-    logo.setCompoundDrawablePadding(dp(9));
-    logo.setMinHeight(dp(48));
-    top.addView(logo, new LinearLayout.LayoutParams(0, -2, 1));
-    TextView badge = text(s == null ? "Offline" : "Online", 12, s == null ? MUTED : INK, true);
-    badge.setCompoundDrawablesRelativeWithIntrinsicBounds(
-        RelayStyle.icon(this, s == null ? "power" : "wifi", s == null ? MUTED : 0xffb8e8d9, 15),
-        null,
-        null,
-        null);
-    badge.setCompoundDrawablePadding(dp(5));
+    LinearLayout.LayoutParams logoLayout = new LinearLayout.LayoutParams(0, -2, 1);
+    logoLayout.leftMargin = dp(11);
+    top.addView(logo, logoLayout);
+    TextView badge = text(s == null ? "Offline" : "Online", 12, s == null ? MUTED : MINT, true);
+    GradientDrawable dot = new GradientDrawable();
+    dot.setShape(GradientDrawable.OVAL);
+    dot.setColor(s == null ? MUTED : MINT);
+    dot.setSize(dp(8), dp(8));
+    badge.setCompoundDrawablesRelativeWithIntrinsicBounds(dot, null, null, null);
+    badge.setCompoundDrawablePadding(dp(7));
     badge.setBackground(RelayStyle.surface(this, Color.WHITE, 20));
-    badge.setPadding(dp(12), dp(7), dp(12), dp(7));
+    badge.setPadding(dp(12), dp(7), dp(13), dp(7));
     top.addView(badge);
     root.addView(top);
-    gap(root, 12);
+    gap(root, 14);
     ScrollView scroll = new ScrollView(this);
     scroll.setFillViewport(false);
     scroll.setVerticalScrollBarEnabled(false);
-    scroll.setClipToPadding(true);
-    scroll.setClipChildren(true);
-    scroll.setPadding(dp(3), dp(3), dp(3), dp(4));
+    scroll.setClipToPadding(false);
+    scroll.setPadding(dp(2), dp(2), dp(2), dp(10));
     content = column();
     scroll.addView(content);
     root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-    if (!state.equals("idle") && !state.equals("offline")) {
+    boolean home = state.equals("idle") || state.equals("offline");
+    if (!home) {
       callScreen(s, state);
     } else
       switch (tab) {
@@ -392,75 +447,106 @@ public class MainActivity extends Activity {
         default:
           devices(s);
       }
+    // Slide the cards in when the screen changes, not on every data refresh.
+    String screen = home ? tab : state;
+    if (!screen.equals(shownScreen)) {
+      shownScreen = screen;
+      int order = 0;
+      for (int i = 0; i < content.getChildCount(); i++) {
+        View child = content.getChildAt(i);
+        if (child instanceof Space) continue;
+        child.setAlpha(0);
+        child.setTranslationY(dp(14));
+        child
+            .animate()
+            .alpha(1)
+            .translationY(0)
+            .setStartDelay(Math.min(order++, 6) * 45L)
+            .setDuration(280)
+            .setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f))
+            .start();
+      }
+    }
+    if (!home) return;
     LinearLayout nav = new LinearLayout(this);
-    nav.setPadding(dp(5), dp(5), dp(5), dp(5));
-    nav.setBackground(RelayStyle.surface(this, Color.WHITE, 22));
-    RelayStyle.shadow(nav, 4);
+    nav.setPadding(dp(6), dp(6), dp(6), dp(6));
+    nav.setBackground(RelayStyle.surface(this, Color.WHITE, 28));
+    RelayStyle.shadow(nav, 6);
     for (String item : new String[] {"Devices", "History", "Settings"}) {
+      boolean selected = item.equals(tab);
       Button b =
           button(
               item,
-              item.equals(tab) ? LIME : Color.WHITE,
-              item.equals(tab) ? INK : MUTED,
+              selected ? SOFT : 0x00ffffff,
+              selected ? ACCENT : MUTED,
               () -> {
                 tab = item;
                 renderKey = "";
                 refresh();
               });
-      b.setTextSize(13);
-      b.setPadding(dp(4), dp(7), dp(4), dp(7));
+      b.setTextSize(12);
+      b.setPadding(dp(4), dp(8), dp(4), dp(8));
+      b.setBackground(
+          new android.graphics.drawable.RippleDrawable(
+              android.content.res.ColorStateList.valueOf(0x1f15172b),
+              RelayStyle.surface(this, selected ? SOFT : 0x00ffffff, 22),
+              RelayStyle.surface(this, Color.WHITE, 22)));
       b.setCompoundDrawablesRelativeWithIntrinsicBounds(
           null,
           RelayStyle.icon(
               this,
               item.equals("Devices") ? "users" : item.equals("History") ? "history" : "settings",
-              item.equals(tab) ? INK : MUTED,
+              selected ? ACCENT : MUTED,
               21),
           null,
           null);
       b.setCompoundDrawablePadding(dp(4));
       LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1);
-      p.setMargins(dp(3), 0, dp(3), 0);
+      p.setMargins(dp(2), 0, dp(2), 0);
       nav.addView(b, p);
     }
-    if (state.equals("idle") || state.equals("offline")) root.addView(nav);
+    LinearLayout.LayoutParams navLayout = new LinearLayout.LayoutParams(-1, -2);
+    navLayout.setMargins(dp(2), dp(4), dp(2), dp(4));
+    root.addView(nav, navLayout);
   }
 
   void heading(String title, String sub) {
-    content.addView(text(title, 25, INK, true));
-    gap(content, 6);
+    content.addView(text(title, 27, INK, true));
+    gap(content, 4);
     content.addView(text(sub, 14, MUTED, false));
-    gap(content, 16);
+    gap(content, 18);
   }
 
   void devices(RelayService s) {
     heading("Your devices", "Talk to someone on the same Wi-Fi.");
-    LinearLayout hero = card(content, INK);
+    LinearLayout hero = card(content, ACCENT);
+    hero.setPadding(dp(20), dp(20), dp(20), dp(20));
     LinearLayout status = new LinearLayout(this);
     status.setGravity(Gravity.CENTER_VERTICAL);
-    ImageView orb = new ImageView(this);
-    orb.setImageDrawable(new CosmicDrawable.Orb());
-    orb.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-    status.addView(orb, new LinearLayout.LayoutParams(dp(44), dp(44)));
-    TextView statusTitle = text(s == null ? "Ready to connect" : "Ready for calls", 21, TEXT, true);
-    LinearLayout.LayoutParams statusLabel = new LinearLayout.LayoutParams(0, -2, 1);
-    statusLabel.leftMargin = dp(10);
-    status.addView(statusTitle, statusLabel);
-    hero.addView(status);
-    gap(hero, 8);
-    hero.addView(
+    LinearLayout words = column();
+    words.addView(text(s == null ? "Ready to connect" : "Ready for calls", 21, Color.WHITE, true));
+    gap(words, 4);
+    words.addView(
         text(
             s == null
                 ? "Turn on availability to receive calls from your paired devices."
                 : "Receive calls while Relay is in the background.",
             14,
-            0xffc4d5ce,
+            0xddffffff,
             false));
+    status.addView(words, new LinearLayout.LayoutParams(0, -2, 1));
+    if (s != null) {
+      LinearLayout.LayoutParams waveLayout = new LinearLayout.LayoutParams(dp(52), dp(44));
+      waveLayout.leftMargin = dp(12);
+      status.addView(new WaveView(this, 7, Color.WHITE).ambient(), waveLayout);
+    }
+    hero.addView(status);
+    gap(hero, 6);
     addButton(
         hero,
         s == null ? "Become available" : "Pair a device",
-        LIME,
-        INK,
+        Color.WHITE,
+        ACCENT,
         () -> {
           if (s == null) startReceiver();
           else pairing(null);
@@ -470,9 +556,7 @@ public class MainActivity extends Activity {
       content.addView(e);
       gap(content, 12);
     }
-    LinearLayout label = new LinearLayout(this);
-    label.addView(text("Paired devices", 16, INK, true));
-    content.addView(label);
+    content.addView(text("Paired devices", 16, INK, true));
     gap(content, 10);
     JSONArray contacts = store.contacts();
     if (contacts.length() == 0) {
@@ -490,44 +574,33 @@ public class MainActivity extends Activity {
     for (int i = 0; i < contacts.length(); i++) {
       JSONObject c = contacts.optJSONObject(i);
       LinearLayout row = card(content, Color.WHITE);
+      row.setPadding(dp(14), dp(14), dp(10), dp(14));
       deviceHeader(
           row,
           c.optString("name"),
           c.optBoolean("auto") ? "Automatic calls agreed" : "Paired · " + c.optString("host"),
+          () -> {
+            if (s == null) {
+              toast("Become available first");
+              return;
+            }
+            s.connect(
+                c.optString("host"), c.optInt("port", 52743), c.optString("fingerprint"), false);
+          },
           () -> contactOptions(c, s));
-      LinearLayout actions = new LinearLayout(this);
-      gap(row, 12);
-      Button call =
-          button(
-              "Call",
-              INK,
-              Color.WHITE,
-              () -> {
-                if (s == null) {
-                  toast("Become available first");
-                  return;
-                }
-                s.connect(
-                    c.optString("host"),
-                    c.optInt("port", 52743),
-                    c.optString("fingerprint"),
-                    false);
-              });
-      actions.addView(call, new LinearLayout.LayoutParams(0, -2, 1));
-      row.addView(actions);
     }
     if (s != null && !s.nearby.isEmpty()) {
       boolean nearbyHeading = false;
       for (JSONObject n : new ArrayList<>(s.nearby.values()))
         if (store.contact(n.optString("fingerprint")) == null) {
           if (!nearbyHeading) {
+            gap(content, 4);
             content.addView(text("Nearby devices", 16, INK, true));
             gap(content, 10);
             nearbyHeading = true;
           }
           LinearLayout row = card(content, Color.WHITE);
-          row.addView(text(n.optString("name"), 18, INK, true));
-          row.addView(text(n.optString("host"), 13, MUTED, false));
+          deviceHeader(row, n.optString("name"), n.optString("host"), null, null);
           addButton(row, "Pair", BG, INK, () -> pairing(n));
         }
     }
@@ -537,7 +610,7 @@ public class MainActivity extends Activity {
     EditText e = new EditText(this);
     e.setSingleLine(true);
     e.setTextColor(TEXT);
-    e.setHighlightColor(0x556f85b9);
+    e.setHighlightColor(0x335b5fe0);
     e.setHintTextColor(MUTED);
     e.setTextSize(16);
     e.setHint(hint);
@@ -870,56 +943,86 @@ public class MainActivity extends Activity {
     return true;
   }
 
+  void addAction(LinearLayout l, String title, int bg, int fg, Runnable run) {
+    gap(l, 10);
+    l.addView(button(title, bg, fg, run), new LinearLayout.LayoutParams(-1, -2));
+  }
+
+  void note(LinearLayout l, String value, int size, int color, boolean bold) {
+    l.addView(centered(text(value, size, color, bold)));
+  }
+
   void callScreen(RelayService s, String state) {
-    if (!state.equals("active") && !state.equals("acceptedWaiting"))
-      heading(
-          state.startsWith("pair") || state.equals("connectingPair")
-              ? "Connect a device"
-              : "Local call",
-          "Private · same Wi-Fi");
-    LinearLayout box = card(content, INK);
-    box.addView(text(s.peerName, 23, Color.WHITE, true));
-    gap(box, 12);
+    boolean live = state.equals("active") || state.equals("acceptedWaiting");
+    boolean pairingState = state.startsWith("pair") || state.equals("connectingPair");
+    if (!live) heading(pairingState ? "Connect a device" : "Local call", "Private · same Wi-Fi");
+    LinearLayout box = card(content, Color.WHITE);
+    box.setPadding(dp(20), dp(22), dp(20), dp(20));
+    if (!live) {
+      boolean asking =
+          state.equals("incoming") || state.equals("pairIncoming") || state.equals("autoIncoming");
+      FrameLayout badge = new FrameLayout(this);
+      View rings = new View(this);
+      rings.setBackground(new RelayArt.Pulse(asking ? MINT : ACCENT, .5f));
+      badge.addView(rings, new FrameLayout.LayoutParams(-1, -1));
+      badge.addView(
+          avatar(s.peerName, 72, 28), new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
+      LinearLayout.LayoutParams badgeLayout = new LinearLayout.LayoutParams(dp(136), dp(136));
+      badgeLayout.gravity = Gravity.CENTER_HORIZONTAL;
+      box.addView(badge, badgeLayout);
+      gap(box, 4);
+    }
+    note(box, s.peerName, 23, INK, true);
+    gap(box, 8);
     if (state.equals("autoIncoming")) {
-      box.addView(text("A mutual automatic-answer agreement", 17, LIME, true));
-      gap(box, 12);
-      box.addView(
-          text(
-              "Calls between these devices will connect on speaker without tapping Answer. Your"
-                  + " microphone stays off until you hold TALK. Either device can revoke this"
-                  + " agreement.",
-              15,
-              0xffc4d5ce,
-              false));
-      addButton(box, "Agree and enable", LIME, INK, s::approveAutomatic);
-      addButton(box, "Decline", 0xff31544e, Color.WHITE, () -> s.end("Agreement declined", true));
-    } else if (state.startsWith("auto") || state.equals("connectingAuto")) {
-      box.addView(text("Waiting for the other device to agree…", 16, 0xffc4d5ce, false));
-      addButton(
-          box, "Cancel request", 0xff31544e, Color.WHITE, () -> s.end("Agreement cancelled", true));
-    } else if (state.equals("pairIncoming")) {
-      box.addView(text("Wants to pair with your device", 16, 0xffc4d5ce, false));
+      note(box, "A mutual automatic-answer agreement", 16, ACCENT, true);
       gap(box, 10);
-      box.addView(text("Requesting device key\n" + s.peerFp.substring(0, 12), 18, LIME, true));
-      box.addView(
-          text(
-              "Approve only if you recognize the device and requested this connection.",
-              14,
-              0xffc4d5ce,
-              false));
-      addButton(box, "Approve pairing", LIME, INK, s::approvePair);
-      addButton(box, "Decline", 0xff31544e, Color.WHITE, () -> s.end("Declined", true));
-    } else if (state.startsWith("pair") || state.equals("connectingPair")) {
-      box.addView(text("Waiting for pairing approval…", 16, 0xffc4d5ce, false));
-      addButton(box, "Cancel", 0xff31544e, Color.WHITE, () -> s.end("Pairing cancelled", true));
+      note(
+          box,
+          "Calls between these devices will connect on speaker without tapping Answer. Your"
+              + " microphone stays off until you hold TALK. Either device can revoke this"
+              + " agreement.",
+          14,
+          MUTED,
+          false);
+      gap(box, 8);
+      addAction(box, "Agree and enable", ACCENT, INK, s::approveAutomatic);
+      addAction(box, "Decline", RED_SOFT, RED, () -> s.end("Agreement declined", true));
+    } else if (state.startsWith("auto") || state.equals("connectingAuto")) {
+      note(box, "Waiting for the other device to agree…", 15, MUTED, false);
+      gap(box, 8);
+      addAction(box, "Cancel request", BG, INK, () -> s.end("Agreement cancelled", true));
+    } else if (state.equals("pairIncoming")) {
+      note(box, "Wants to pair with your device", 15, MUTED, false);
+      gap(box, 14);
+      note(box, "Requesting device key", 12, MUTED, true);
+      TextView key = centered(text(s.peerFp.substring(0, 12), 20, ACCENT, true));
+      key.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+      key.setLetterSpacing(.08f);
+      box.addView(key);
+      gap(box, 10);
+      note(
+          box,
+          "Approve only if you recognize the device and requested this connection.",
+          14,
+          MUTED,
+          false);
+      gap(box, 8);
+      addAction(box, "Approve pairing", ACCENT, INK, s::approvePair);
+      addAction(box, "Decline", RED_SOFT, RED, () -> s.end("Declined", true));
+    } else if (pairingState) {
+      note(box, "Waiting for pairing approval…", 15, MUTED, false);
+      gap(box, 8);
+      addAction(box, "Cancel", BG, INK, () -> s.end("Pairing cancelled", true));
     } else if (state.equals("incoming")) {
-      box.addView(text("Incoming local call", 17, LIME, true));
-      gap(box, 16);
-      box.addView(text("Answer to connect, then hold TALK to speak.", 15, 0xffc4d5ce, false));
-      addButton(
+      note(box, "Incoming local call", 16, MINT, true);
+      gap(box, 6);
+      note(box, "Answer to connect, then hold TALK to speak.", 14, MUTED, false);
+      gap(box, 8);
+      addAction(
           box,
           "Answer",
-          LIME,
+          MINT,
           INK,
           () -> {
             if (audioPermission()) s.activate();
@@ -928,32 +1031,40 @@ public class MainActivity extends Activity {
               requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 10);
             }
           });
-      addButton(box, "Decline", 0xff31544e, Color.WHITE, () -> s.end("Declined", true));
-    } else if (state.equals("active") || state.equals("acceptedWaiting")) {
-      callClock = text("00:00", 20, LIME, true);
+      addAction(box, "Decline", RED_SOFT, RED, () -> s.end("Declined", true));
+    } else if (live) {
+      callClock = centered(text("00:00", 16, ACCENT, true));
+      callClock.setFontFeatureSettings("tnum");
       box.addView(callClock);
       gap(box, 14);
-      callHint = text("Hold to talk. Release to listen.", 15, 0xffc4d5ce, false);
+      callWave = new WaveView(this, 31, ACCENT);
+      callWave.source = () -> s.talking ? s.micLevel : s.remoteTalking ? s.remoteLevel : 0;
+      box.addView(callWave, new LinearLayout.LayoutParams(-1, dp(56)));
+      gap(box, 10);
+      callHint = centered(text("Hold to talk. Release to listen.", 14, MUTED, false));
       box.addView(callHint);
-      gap(box, 14);
-      talkButton = button("Hold to\ntalk", LIME, INK, () -> {});
-      talkButton.setTextSize(18);
-      talkButton.setPadding(dp(24), dp(24), dp(24), dp(24));
+      gap(box, 10);
+      talkButton = button("Hold to\ntalk", ACCENT, INK, () -> {});
+      talkButton.setTextSize(16);
+      talkButton.setPadding(dp(24), dp(34), dp(24), dp(30));
       talkButton.setContentDescription("Hold to talk. Release to listen.");
       talkButton.setCompoundDrawablesRelativeWithIntrinsicBounds(
-          null, RelayStyle.icon(this, "mic", INK, 24), null, null);
+          null, RelayStyle.icon(this, "mic", Color.WHITE, 26), null, null);
       talkButton.setCompoundDrawablePadding(dp(6));
-      talkOrb = new CosmicDrawable.Orb();
+      talkOrb = new RelayArt.Orb();
       talkButton.setBackground(talkOrb);
+      talkButton.setStateListAnimator(null);
       talkButton.setOnTouchListener(
           (v, e) -> {
             if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
               v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+              v.animate().scaleX(.94f).scaleY(.94f).setDuration(120).start();
               s.talk(true);
               return true;
             }
             if (e.getActionMasked() == MotionEvent.ACTION_UP
                 || e.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+              v.animate().scaleX(1).scaleY(1).setDuration(160).start();
               s.talk(false);
               v.performClick();
               return true;
@@ -961,20 +1072,20 @@ public class MainActivity extends Activity {
             return true;
           });
       talkButton.setMinHeight(0);
-      LinearLayout.LayoutParams talkLayout = new LinearLayout.LayoutParams(dp(144), dp(144));
+      LinearLayout.LayoutParams talkLayout = new LinearLayout.LayoutParams(dp(176), dp(176));
       talkLayout.gravity = Gravity.CENTER_HORIZONTAL;
       box.addView(talkButton, talkLayout);
-      gap(box, 18);
-      callRecording = text("Encrypted · only paired devices", 12, 0xffb4c8c0, false);
+      gap(box, 8);
+      callRecording = centered(text("Encrypted · only paired devices", 12, MUTED, false));
       box.addView(callRecording);
-      gap(box, 14);
+      gap(box, 16);
       LinearLayout controls = new LinearLayout(this);
-      speakerButton = button("Speaker on", 0xff31544e, Color.WHITE, () -> s.speaker(!s.speaker));
+      speakerButton = button("Speaker on", BG, INK, () -> s.speaker(!s.speaker));
       recordButton =
           button(
               "Record call",
-              0xff31544e,
-              Color.WHITE,
+              BG,
+              INK,
               () -> {
                 if (s.recorder != null) s.stopRecording();
                 else
@@ -992,20 +1103,21 @@ public class MainActivity extends Activity {
       p.setMargins(dp(10), 0, 0, 0);
       controls.addView(recordButton, p);
       box.addView(controls);
-      addButton(box, "End call", RED, INK, () -> s.end("Completed", true));
-      callError = text(s.error, 13, 0xffffc8b9, false);
+      addAction(box, "End call", RED, INK, () -> s.end("Completed", true));
+      callError = centered(text(s.error, 13, RED, false));
       gap(box, 10);
       box.addView(callError);
     } else {
-      box.addView(text("Calling… waiting for an answer", 16, 0xffc4d5ce, false));
-      addButton(box, "Cancel call", 0xff31544e, Color.WHITE, () -> s.end("Cancelled", true));
+      note(box, "Calling… waiting for an answer", 15, MUTED, false);
+      gap(box, 8);
+      addAction(box, "Cancel call", BG, INK, () -> s.end("Cancelled", true));
     }
   }
 
   void settings(RelayService s) {
     heading("Settings", "Personalize Relay and stay connected.");
     LinearLayout identity = card(content, Color.WHITE);
-    deviceHeader(identity, store.name(), "This device", null);
+    deviceHeader(identity, store.name(), "This device", null, null);
     addButton(
         identity,
         "Rename device",
@@ -1038,7 +1150,7 @@ public class MainActivity extends Activity {
     addButton(
         availability,
         s == null ? "Become available" : "Go offline",
-        LIME,
+        ACCENT,
         INK,
         () -> {
           if (s == null) startReceiver();
@@ -1089,7 +1201,8 @@ public class MainActivity extends Activity {
         shortcuts, "Volume up · " + store.shortcut(true), BG, INK, () -> shortcutOptions(true));
     addButton(
         shortcuts, "Volume down · " + store.shortcut(false), BG, INK, () -> shortcutOptions(false));
-    addButton(shortcuts, "Background shortcuts", BG, INK, this::backgroundShortcuts);
+    if (hasShortcutService())
+      addButton(shortcuts, "Background shortcuts", BG, INK, this::backgroundShortcuts);
 
     LinearLayout about = card(content, Color.WHITE);
     about.addView(text("Private by design", 19, INK, true));
@@ -1174,7 +1287,7 @@ public class MainActivity extends Activity {
     addButton(
         body,
         "Choose sound",
-        LIME,
+        ACCENT,
         INK,
         () -> {
           dialog[0].dismiss();
@@ -1314,6 +1427,17 @@ public class MainActivity extends Activity {
     return maker.contains("xiaomi") || maker.contains("redmi") || maker.contains("poco");
   }
 
+  /** The accessibility service is only declared in the adbOnly flavor. */
+  boolean hasShortcutService() {
+    try {
+      getPackageManager()
+          .getServiceInfo(new android.content.ComponentName(this, ButtonShortcutService.class), 0);
+      return true;
+    } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+      return false;
+    }
+  }
+
   void backgroundShortcuts() {
     ArrayList<String> items =
         new ArrayList<>(Arrays.asList("Test volume buttons", "Accessibility settings"));
@@ -1371,6 +1495,7 @@ public class MainActivity extends Activity {
           entry,
           call.optString("name"),
           call.optString("direction") + " · " + call.optString("result"),
+          null,
           () -> historyOptions(call));
       gap(entry, 10);
       entry.addView(

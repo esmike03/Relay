@@ -56,7 +56,7 @@ final class PairingQr {
     BitMatrix m = new QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, size, size, hints);
     int[] pixels = new int[size * size];
     for (int y = 0; y < size; y++)
-      for (int x = 0; x < size; x++) pixels[y * size + x] = m.get(x, y) ? 0xff173b37 : 0xffffffff;
+      for (int x = 0; x < size; x++) pixels[y * size + x] = m.get(x, y) ? 0xff15172b : 0xffffffff;
     return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888);
   }
 }

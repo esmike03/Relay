@@ -10,7 +10,9 @@ Automatic call alerts include a sound picker, Preview button, and a maximum aler
 
 On Android 12 and later, Relay selects a connected call-capable Bluetooth, wired, or USB headset when starting call audio; older versions automatically select connected wired/USB headsets. The audio button displays **Headset** when selected and can switch to the speaker. Bluetooth route selection is cleared when the call ends. Headset compatibility depends on Android's available communication devices. Alert loudness follows call volume; Preview uses media volume.
 
-Version **1.2** brings a cosmic glass theme: an indigo-to-purple aurora background, translucent cards, lavender/mint accents, soft shadows, and consistent line icons. The circular Talk control gently breathes and turns mint while transmitting; it respects Android's animator setting. Native gradients create the frosted effect on older phones without requiring live backdrop blur. Compact cards, grouped settings, and keyboard-aware dialogs keep the controls usable on the TC25's smaller display.
+The interface now uses a light theme: an off-white page with soft pastel glows, white cards, an indigo accent, and mint while transmitting. Cards slide in when the screen changes, buttons shrink slightly when pressed, and ringing or waiting states show pulsing rings. The call screen has a soundwave that follows the real microphone level while you talk and the received audio while the other person talks. All motion respects Android's animator setting.
+
+Version **1.2** brought a cosmic glass theme (since replaced by the light theme above): an indigo-to-purple aurora background, translucent cards, lavender/mint accents, soft shadows, and consistent line icons. The circular Talk control gently breathes and turns mint while transmitting; it respects Android's animator setting. Native gradients create the frosted effect on older phones without requiring live backdrop blur. Compact cards, grouped settings, and keyboard-aware dialogs keep the controls usable on the TC25's smaller display.
 
 ## Get started
 

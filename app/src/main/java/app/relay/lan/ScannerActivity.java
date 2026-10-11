@@ -39,21 +39,28 @@ public class ScannerActivity extends Activity implements SurfaceHolder.Callback 
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     LinearLayout body = new LinearLayout(this);
     body.setOrientation(LinearLayout.VERTICAL);
-    body.setBackground(new CosmicDrawable());
+    body.setBackground(new RelayArt.Backdrop());
+    getWindow().setStatusBarColor(MainActivity.PAGE);
+    getWindow().setNavigationBarColor(MainActivity.PAGE);
+    getWindow()
+        .getDecorView()
+        .setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     body.setPadding(dp(22), dp(34), dp(22), dp(24));
     TextView title = new TextView(this);
     title.setText("Scan QR code");
     title.setTextSize(25);
     title.setCompoundDrawablesRelativeWithIntrinsicBounds(
-        RelayStyle.icon(this, "qr", android.graphics.Color.WHITE, 26), null, null, null);
+        RelayStyle.icon(this, "qr", MainActivity.ACCENT, 26), null, null, null);
     title.setCompoundDrawablePadding(dp(12));
-    title.setTextColor(-1);
+    title.setTextColor(MainActivity.INK);
+    title.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0));
     body.addView(title);
     hint = new TextView(this);
     hint.setText(
         "Point your camera at the other device’s Relay code. Use the same Wi-Fi on both devices.");
     hint.setTextSize(15);
-    hint.setTextColor(0xffc4d5ce);
+    hint.setTextColor(MainActivity.MUTED);
     hint.setPadding(0, dp(16), 0, dp(20));
     body.addView(hint);
     preview = new SurfaceView(this);
@@ -75,14 +82,14 @@ public class ScannerActivity extends Activity implements SurfaceHolder.Callback 
             canvas.drawRect(left + size, top, getWidth(), top + size, paint);
             paint.setStyle(android.graphics.Paint.Style.STROKE);
             paint.setStrokeWidth(dp(2));
-            paint.setColor(MainActivity.LIME);
+            paint.setColor(android.graphics.Color.WHITE);
             canvas.drawRoundRect(left, top, left + size, top + size, dp(20), dp(20), paint);
           }
         },
         new FrameLayout.LayoutParams(-1, -1));
     body.addView(cameraFrame, new LinearLayout.LayoutParams(-1, 0, 1));
     preview.getHolder().addCallback(this);
-    torchButton = RelayDialog.button(this, "Flashlight", 0xff31544e, android.graphics.Color.WHITE);
+    torchButton = RelayDialog.button(this, "Flashlight", android.graphics.Color.WHITE, MainActivity.INK);
     torchButton.setText("Flashlight");
     torchButton.setOnClickListener(
         v -> {
@@ -108,7 +115,7 @@ public class ScannerActivity extends Activity implements SurfaceHolder.Callback 
     torchLayout.topMargin = dp(20);
     body.addView(torchButton, torchLayout);
     Button cancel =
-        RelayDialog.button(this, "Cancel scanning", MainActivity.LIME, MainActivity.INK);
+        RelayDialog.button(this, "Cancel scanning", MainActivity.ACCENT, MainActivity.INK);
     cancel.setText("Cancel scanning");
     cancel.setOnClickListener(v -> finish());
     LinearLayout.LayoutParams cancelLayout = new LinearLayout.LayoutParams(-1, -2);

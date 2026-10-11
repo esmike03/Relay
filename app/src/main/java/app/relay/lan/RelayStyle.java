@@ -12,19 +12,17 @@ final class RelayStyle {
   }
 
   static Drawable surface(Context c, int color, int radius) {
-    if (color == Color.WHITE
-        || color == MainActivity.BG
-        || color == MainActivity.INK
-        || color == 0xff31544e
-        || color == 0xffe6ebe3) {
-      return new CosmicDrawable.Glass(dp(c, radius), color == MainActivity.INK, false);
+    GradientDrawable g;
+    if (color == MainActivity.ACCENT)
+      g =
+          new GradientDrawable(
+              GradientDrawable.Orientation.TL_BR, new int[] {0xff6366f1, 0xff8b5cf6});
+    else {
+      g = new GradientDrawable();
+      g.setColor(color);
     }
-    int end =
-        color == MainActivity.INK ? 0xff493969 : color == MainActivity.LIME ? 0xffb5e6d9 : color;
-    GradientDrawable g =
-        new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[] {color, end});
     g.setCornerRadius(dp(c, radius));
-    g.setStroke(dp(c, 1), 0x40f5eafa);
+    if (color == Color.WHITE) g.setStroke(dp(c, 1), MainActivity.LINE);
     return g;
   }
 
@@ -32,9 +30,26 @@ final class RelayStyle {
     v.setElevation(dp(v.getContext(), depth));
     v.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND);
     if (android.os.Build.VERSION.SDK_INT >= 28) {
-      v.setOutlineAmbientShadowColor(0xff0b0922);
-      v.setOutlineSpotShadowColor(0xff0b0922);
+      v.setOutlineAmbientShadowColor(0x2215172b);
+      v.setOutlineSpotShadowColor(0x445b5fe0);
     }
+  }
+
+  /** Shrinks a control slightly while it is pressed. */
+  static void press(View v) {
+    android.animation.StateListAnimator a = new android.animation.StateListAnimator();
+    a.addState(new int[] {android.R.attr.state_pressed}, scale(v, .97f));
+    a.addState(new int[0], scale(v, 1f));
+    v.setStateListAnimator(a);
+  }
+
+  static android.animation.Animator scale(View v, float to) {
+    android.animation.AnimatorSet set = new android.animation.AnimatorSet();
+    set.playTogether(
+        android.animation.ObjectAnimator.ofFloat(v, "scaleX", to),
+        android.animation.ObjectAnimator.ofFloat(v, "scaleY", to));
+    set.setDuration(110);
+    return set;
   }
 
   static String iconFor(String label) {
