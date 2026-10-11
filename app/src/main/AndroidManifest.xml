@@ -22,10 +22,6 @@
         </activity>
         <service android:name=".RelayService" android:exported="false" android:foregroundServiceType="connectedDevice|microphone|mediaPlayback" android:stopWithTask="false" />
         <activity android:name=".ScannerActivity" android:exported="false" android:screenOrientation="portrait" />
-        <service android:name=".ButtonShortcutService" android:label="Relay button shortcuts" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
-            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
-            <meta-data android:name="android.accessibilityservice" android:resource="@xml/button_shortcuts" />
-        </service>
         <provider android:name=".RecordingProvider" android:authorities="app.relay.lan.recordings" android:exported="false" android:grantUriPermissions="true" />
     </application>
 </manifest>

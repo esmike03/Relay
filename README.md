@@ -61,13 +61,15 @@ This version handles one peer per call. Group channels, Bluetooth pairing betwee
 
 ## Build and source
 
-Open this directory in Android Studio. The checked-in Gradle wrapper uses Gradle 8.13 and Android Gradle Plugin 8.13.2. Install JDK 17 and Android SDK platform 35. Android Studio can create `local.properties` for your SDK path.
+Open this directory in Android Studio. The checked-in Gradle wrapper uses Gradle 8.13 and Android Gradle Plugin 8.7.3. Install JDK 17 and Android SDK platform 35. Android Studio can create `local.properties` for your SDK path.
 
 ```powershell
 .\gradlew.bat assembleDebug testDebugUnitTest lintDebug
 ```
 
-The APK appears in `app/build/outputs/apk/debug/app-debug.apk`. `Relay.apk` is a signed **development/test build**, not a Play Store release. Rebuilding with a different debug signing key requires uninstalling the existing build or using the original signing key, which affects saved contacts/history. For distribution, configure a private release signing key, review current store requirements, and test on additional devices. Signing secrets are not included in the source archive.
+There are two flavors. `sideload` (the default) has no accessibility service and is the one to share as an APK file. `adbOnly` adds the background volume-button accessibility service. Google Play Protect blocks APKs that declare an accessibility service when they are installed from a file manager, browser, or messaging app ("App blocked to protect your device"), so install `adbOnly` with `adb install` or Android Studio only.
+
+The APKs appear in `app/build/outputs/apk/<flavor>/<buildType>/`, for example `app/build/outputs/apk/sideload/debug/app-sideload-debug.apk`. `Relay.apk` is a signed **development/test build**, not a Play Store release. Rebuilding with a different debug signing key requires uninstalling the existing build or using the original signing key, which affects saved contacts/history. For distribution, configure a private release signing key, review current store requirements, and test on additional devices. Signing secrets are not included in the source archive.
 
 The app uses Java, Android platform APIs, and the bundled ZXing core library (Apache 2.0) for fully offline QR generation and scanning. The main components are `MainActivity` (screens), `RelayService` (receiver/call lifecycle and transport), `Identity` (Keystore certificates), `Lan` (subnet checks), `Store` (contacts/history/journal), `WavRecorder` (recording timeline), and `RecordingProvider` (temporary read-only export).
 
@@ -79,7 +81,7 @@ Open the **•••** menu beside a trusted contact and choose **Automatic answ
 
 In **Settings → Button shortcuts**, configure each volume key as **System volume**, **Answer call**, **Hold to talk**, or **End/decline call**. Defaults are volume up to answer and volume down to hold TALK. These shortcuts work on the visible call screen.
 
-To use volume shortcuts after leaving Relay, open **Settings → Background shortcuts → Accessibility settings** and manually enable **Relay button shortcuts**. This optional service requests hardware key filtering, not screen content access, and acts only during Relay calls. Android may require **App info → Allow restricted settings** for a sideloaded app. Background key delivery and behavior with the screen off depend on the device and system settings; Android may prioritize another key-filtering accessibility service. For an automatically answered call with no microphone service yet, pressing TALK opens the call screen before enabling microphone access.
+Background shortcuts are only in the `adbOnly` flavor (see Build and source); the `sideload` flavor hides this setting. To use volume shortcuts after leaving Relay, open **Settings → Background shortcuts → Accessibility settings** and manually enable **Relay button shortcuts**. This optional service requests hardware key filtering, not screen content access, and acts only during Relay calls. Android may require **App info → Allow restricted settings** for a sideloaded app. Background key delivery and behavior with the screen off depend on the device and system settings; Android may prioritize another key-filtering accessibility service. For an automatically answered call with no microphone service yet, pressing TALK opens the call screen before enabling microphone access.
 
 The power button and its long-press behavior belong to Android and are not offered as app shortcuts. Force-stop still prevents call delivery, regardless of shortcuts.
 
