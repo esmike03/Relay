@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Relay.Hub.Tests" />
+    <InternalsVisibleTo Include="Relay.Interop.Checks" />
+    <InternalsVisibleTo Include="Relay.Desktop.Checks" />
+  </ItemGroup>
+</Project>

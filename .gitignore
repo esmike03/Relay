@@ -2,3 +2,9 @@
 **/build/
 local.properties
 *.jks
+**/bin/
+**/obj/
+artifacts/
+*.pfx
+*.p12
+!app/src/test/resources/tunnel-test.p12

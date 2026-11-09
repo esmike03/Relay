@@ -58,6 +58,15 @@ final class Identity {
             return "RSA".equals(t) ? alias : null;
           }
 
+          public String chooseEngineClientAlias(String[] types, Principal[] issuers, SSLEngine engine) {
+            for (String type : types) if ("RSA".equals(type)) return alias;
+            return null;
+          }
+
+          public String chooseEngineServerAlias(String type, Principal[] issuers, SSLEngine engine) {
+            return "RSA".equals(type) ? alias : null;
+          }
+
           public X509Certificate[] getCertificateChain(String a) {
             return new X509Certificate[] {cert};
           }

@@ -1,6 +1,16 @@
-# Relay — local Android walkie-talkie
+# Relay — local walkie-talkie and desktop manager
 
 A working native Android app for private, one-to-one push-to-talk calls on a local network. No account, cloud backend, analytics, subscription, or internet connection is required.
+
+Version **2.1** adds a **light-mode Windows desktop**, two-way desktop-to-device push-to-talk, **Talk to all** announcements, priority emergency broadcasts, and **SOS** on phones. Select a device and call it from the desktop, or open **Dispatch** to announce to connected devices. A phone must answer a normal desktop call; announcement receivers keep their microphones off. Emergency alerts show the sender, time, message and resolution, and reconcile after reconnecting. Updated 2.1 clients advertise these capabilities; older clients retain their existing functionality.
+
+Version **2.0** adds **Relay Desktop Manager** for Windows: approved device enrollment, an authenticated device directory, presence, local aliases, network diagnostics, and an optional hub for calls across private IPv4 subnets. Updated Android clients prefer a permitted direct route and can fall back to an end-to-end encrypted tunnel through the desktop. Both phones must be able to reach the PC; Relay does not change router policies or enable OS routing. The hub forwards phone-to-phone encrypted bytes without reading the audio. Desktop dispatch uses encrypted connections with the hub as the voice participant. Peer pairing and automatic-answer agreements remain separate from desktop enrollment.
+
+Use **Settings → Desktop manager** on Android to scan a desktop enrollment invitation or enter it manually. Approve the desktop fingerprint on the phone, then approve the phone in the desktop manager. Each invitation is single-use and valid for ten minutes. **Settings → Approved routed subnets** enables explicitly selected private IPv4 CIDRs for direct calls when the router allows them. Existing same-subnet direct connections remain available without the desktop.
+
+See [Desktop setup](docs/DESKTOP-SETUP.md), [architecture](docs/DESKTOP-ARCHITECTURE.md), [hub protocol](docs/HUB-PROTOCOL.md), [dispatch/emergency protocol](docs/DISPATCH-PROTOCOL.md), and [validation](docs/DESKTOP-VALIDATION.md). Build the Windows x64 portable packages with `.\desktop\build.ps1 -Publish` using .NET 10 SDK. Prebuilt task outputs, when present, are in `artifacts/`.
+
+Pressing the mic/TALK button plays the bundled radio beep once when transmission starts, including when using a volume-button talk shortcut. The cue uses the selected call audio route and respects silent/vibrate mode, Do Not Disturb, and muted ring/call volume.
 
 Version **1.7** adds a short two-note beep and a 120 ms vibration on the receiving device when the other person releases Talk. Both are enabled by default and have separate On/Off controls in **Settings → Call feedback**. The beep follows the last voice packet through the same headset/speaker output. Vibrate mode produces vibration only; silent mode and Do Not Disturb suppress both. Muted ring/call volume also suppresses the beep. Duplicate release messages, a local release, and ending the call do not create extra cues. The beep is not included in saved recordings.
 
@@ -29,7 +39,7 @@ The 12-character pairing key is separate from Android's wireless debugging pairi
 
 - Mutual pairing approval and the ability to forget contacts.
 - Encrypted TLS 1.2 connections with mutual device certificates, pinned identities, and ECDHE/AES-GCM cipher suites.
-- Same-subnet private IPv4 checks for Wi-Fi, Ethernet, and compatible Android hotspot interfaces.
+- Same-subnet private IPv4 checks for Wi-Fi, Ethernet, and compatible Android hotspot interfaces, plus explicitly approved routed private subnets.
 - Local network discovery, with manual IP pairing and contact address updates as fallback.
 - Incoming call notifications with answer/decline actions and an optional lock-screen call display.
 - A foreground availability service that continues after leaving the app screen.
@@ -51,13 +61,13 @@ Android **Force stop**, Android's active-app **Stop** control, reboot, or vendor
 
 Enable notifications. On Android 14 and later, **Settings → Background call settings → Incoming call screen permission** controls whether a call may open on the lock screen; otherwise an incoming call notification remains the entry point. Do Not Disturb and notification settings may silence alerts.
 
-The listener uses battery while available. **Go offline** closes it. Reconnect devices to a local Wi-Fi network to make calls; guest network/client isolation can prevent peers from communicating even when both show the same Wi-Fi name. Discovery uses mDNS; calls use TCP port **52743**. Manual IP pairing helps when mDNS is blocked, but cannot bypass router client isolation. IPv6-only networks and separate routed subnets are outside this version's scope.
+The listener uses battery while available. **Go offline** closes it and its hub connection. Reconnect devices to a local Wi-Fi network to make calls; guest network/client isolation can prevent peers from communicating even when both show the same Wi-Fi name. Local discovery uses mDNS; direct calls use TCP port **52743**. Manual IP pairing helps when mDNS is blocked. Cross-subnet direct calls require approved ranges and router permission. The optional desktop hub uses TCP **52744** and works only when each phone can reach it. Neither manual pairing nor a hub can overcome a policy that blocks the required network path. IPv6-only networks remain outside this version's scope.
 
 ## Recordings and privacy
 
 Record only when all participants agree. Relay signals recording to the other device; it does not remotely prevent modified clients or external recorders from recording. Files stay in Android's private app storage and are protected by the device's storage security; they do not have an additional app-level encryption layer. Sharing deliberately gives your chosen receiving app access to that WAV file. Uninstalling removes app history and recordings.
 
-This version handles one peer per call. Group channels, Bluetooth pairing between Relay peers, cloud/push delivery, cellular calls, and cross-subnet routing are not implemented. Additional headset models, extended overnight standby, and other manufacturers need additional device testing.
+This version handles one peer per phone-to-phone call. The desktop can forward separate calls between different device pairs, make a two-way call to one device, or announce to multiple devices. Full group conversations, Bluetooth pairing between Relay peers, cloud/push delivery, cellular calls, and seamless mid-call route switching are not implemented. Additional headset models, extended overnight standby, routed physical networks, and other manufacturers need additional device testing.
 
 ## Build and source
 

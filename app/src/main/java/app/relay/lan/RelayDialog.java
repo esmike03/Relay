@@ -32,14 +32,20 @@ final class RelayDialog extends AlertDialog {
   }
 
   static Button button(Context c, String label, int bg, int fg) {
+    if (bg == MainActivity.INK) bg = MainActivity.LIME;
     if (fg == MainActivity.INK && bg != MainActivity.LIME) fg = MainActivity.TEXT;
-    if (bg == MainActivity.RED) fg = MainActivity.INK;
+    if (bg == MainActivity.RED) {
+      bg = MainActivity.SOS_RED;
+      fg = Color.WHITE;
+    }
+    if (bg == MainActivity.LIME) fg = MainActivity.ON_LIME;
     Button b = new Button(c);
     b.setText(label);
-    b.setAllCaps(false);
-    b.setTextSize(15);
+    b.setAllCaps(true);
+    b.setTextSize(13);
+    b.setLetterSpacing(.06f);
     b.setTextColor(fg);
-    b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+    b.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
     b.setGravity(Gravity.CENTER);
     b.setIncludeFontPadding(false);
     b.setMinWidth(0);
@@ -54,7 +60,12 @@ final class RelayDialog extends AlertDialog {
         (int) (12 * c.getResources().getDisplayMetrics().density));
     b.setBackground(
         new RippleDrawable(
-            ColorStateList.valueOf(0x33d1c3f7), shape(c, bg, 15), shape(c, Color.WHITE, 15)));
+            ColorStateList.valueOf(
+                bg == MainActivity.SOS_RED
+                    ? 0x33ffffff
+                    : bg == MainActivity.LIME
+                        ? (MainActivity.ON_LIME & 0x00ffffff) | 0x33000000
+                        : MainActivity.RIPPLE), shape(c, bg, 15), shape(c, Color.WHITE, 15)));
     if (!label.equals("×")) {
       b.setCompoundDrawablesRelativeWithIntrinsicBounds(
           RelayStyle.icon(c, RelayStyle.iconFor(label), fg, 20), null, null, null);
@@ -67,7 +78,7 @@ final class RelayDialog extends AlertDialog {
     TextView t = new TextView(getContext());
     t.setText(value);
     t.setTextSize(size);
-    t.setTextColor(color == MainActivity.INK ? MainActivity.TEXT : color);
+    t.setTextColor(MainActivity.textColor(color));
     t.setLineSpacing(dp(4), 1);
     if (bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
     return t;
@@ -95,11 +106,12 @@ final class RelayDialog extends AlertDialog {
     shell = new LinearLayout(c);
     shell.setOrientation(LinearLayout.VERTICAL);
     shell.setPadding(dp(20), dp(18), dp(20), dp(18));
-    shell.setBackground(new CosmicDrawable.Glass(dp(26), false, true));
-    RelayStyle.shadow(shell, 8);
+    shell.setBackground(RelayStyle.surface(c, Color.WHITE, 26));
     LinearLayout brand = new LinearLayout(c);
     brand.setGravity(Gravity.CENTER_VERTICAL);
     TextView tag = text("RELAY", 11, MainActivity.MUTED, true);
+    tag.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+    tag.setLetterSpacing(.2f);
     tag.setCompoundDrawablesRelativeWithIntrinsicBounds(
         RelayStyle.icon(c, "radio", MainActivity.TEXT, 18), null, null, null);
     tag.setCompoundDrawablePadding(dp(8));
@@ -109,7 +121,7 @@ final class RelayDialog extends AlertDialog {
     close.setScaleType(ImageView.ScaleType.CENTER);
     close.setBackground(
         new RippleDrawable(
-            ColorStateList.valueOf(0x223c5f49), shape(c, MainActivity.BG, 14), null));
+            ColorStateList.valueOf(MainActivity.RIPPLE), shape(c, MainActivity.BG, 14), null));
     close.setPadding(0, 0, 0, 0);
     close.setContentDescription("Close dialog");
     close.setOnClickListener(v -> cancel());
@@ -117,7 +129,7 @@ final class RelayDialog extends AlertDialog {
     shell.addView(brand);
     gap(shell, 10);
     if (spec.title != null) {
-      shell.addView(text(spec.title, 22, MainActivity.INK, true));
+      shell.addView(text(spec.title, 20, MainActivity.INK, true));
       gap(shell, 14);
     }
     scroll = new ScrollView(c);
@@ -163,7 +175,7 @@ final class RelayDialog extends AlertDialog {
               c,
               spec.positive.toString(),
               danger ? MainActivity.RED : MainActivity.LIME,
-              danger ? Color.WHITE : MainActivity.INK);
+              MainActivity.INK);
       positive.setOnClickListener(
           v -> {
             if (spec.positiveClick != null) spec.positiveClick.onClick(this, BUTTON_POSITIVE);
@@ -173,7 +185,7 @@ final class RelayDialog extends AlertDialog {
     }
     if (spec.negative != null) {
       gap(footer, 9);
-      negative = button(c, spec.negative.toString(), 0xffe6ebe3, MainActivity.INK);
+      negative = button(c, spec.negative.toString(), MainActivity.BG, MainActivity.INK);
       negative.setOnClickListener(
           v -> {
             if (spec.negativeClick != null) spec.negativeClick.onClick(this, BUTTON_NEGATIVE);

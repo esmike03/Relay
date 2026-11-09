@@ -20,6 +20,29 @@ public class RelayService extends Service {
   final ExecutorService workers = Executors.newFixedThreadPool(4);
   final Set<Channel> channels = ConcurrentHashMap.newKeySet();
   final Map<String, JSONObject> nearby = new LinkedHashMap<>();
+  final Map<String, JSONObject> hubPeers = new LinkedHashMap<>();
+  String hubStatus = "Desktop hub is not configured", connectionRoute = "Direct";
+  boolean hubSupportsDispatch, hubSupportsEmergency;
+  String dispatchMode = "", dispatchName = "", dispatchMessage = "", dispatchError = "";
+  String sosStatus = "", pendingSosId = "";
+  private String emergencyNotificationId = "";
+  long dispatchStartedAt, lastSosAt = -30000;
+  int dispatchReceivedAudioFrames;
+  volatile boolean dispatchTalking, dispatchRemoteTalking, dispatchCapturing;
+  private boolean dispatchVisible;
+  private boolean dispatchAudioStarted;
+  private volatile AudioRecord dispatchMic;
+  private final Object dispatchCaptureLock = new Object();
+  private volatile DispatchConnection dispatchConnection;
+  private volatile DispatchFloor dispatchFloor;
+  private JSONObject dispatchOffer;
+  private ConnectionCancellation dispatchCancellation;
+  private long dispatchGeneration;
+  HubClient hub;
+  long hubGeneration;
+  boolean hubOfferPending;
+  final ThreadPoolExecutor hubWorkers = new ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS,
+      new ArrayBlockingQueue<>(8), new ThreadPoolExecutor.AbortPolicy());
   Store store;
   Identity identity;
   volatile SSLServerSocket server;
@@ -44,7 +67,8 @@ public class RelayService extends Service {
   NsdManager.DiscoveryListener discovery;
   final Semaphore handshakes = new Semaphore(3);
   long lastPairRequest;
-  long connectionAttempt;
+  volatile long connectionAttempt;
+  ConnectionCancellation pendingConnection;
   long lastJournal;
   volatile boolean capturing;
   boolean microphoneEnabled;
@@ -54,7 +78,11 @@ public class RelayService extends Service {
   Ringtone ring;
   Ringtone automaticChime;
   Runnable automaticChimeStart;
+  SoundPool talkStartSounds;
+  int talkStartSample, talkStartStream;
+  boolean talkStartLoaded;
   AudioFocusRequest focus;
+  long audioFocusGeneration;
 
   void changed() {
     revision++;
@@ -69,6 +97,15 @@ public class RelayService extends Service {
     super.onCreate();
     instance = this;
     store = new Store(this);
+    JSONArray savedEmergencies = store.emergencies();
+    for (int i = 0; i < savedEmergencies.length(); i++) {
+      JSONObject emergency = savedEmergencies.optJSONObject(i);
+      if (emergency != null && emergency.optBoolean("active", true)
+          && !emergency.optBoolean("resolved") && !emergency.optBoolean("dismissed")) {
+        emergencyNotificationId = emergency.optString("id");
+        break;
+      }
+    }
     running = true;
     JSONObject interrupted = store.pending();
     if (interrupted != null) {
@@ -98,6 +135,10 @@ public class RelayService extends Service {
         new NotificationChannel("calls", "Incoming calls", NotificationManager.IMPORTANCE_HIGH);
     calls.enableVibration(true);
     nm.createNotificationChannel(calls);
+    NotificationChannel emergencies = new NotificationChannel("emergencies", "Relay emergency alerts",
+        NotificationManager.IMPORTANCE_HIGH);
+    emergencies.setDescription("Emergency messages from your enrolled local Relay desktop hub");
+    nm.createNotificationChannel(emergencies);
     NotificationChannel automaticCalls =
         new NotificationChannel(
             "automatic_calls", "Automatic call alerts", NotificationManager.IMPORTANCE_HIGH);
@@ -113,6 +154,7 @@ public class RelayService extends Service {
     nm.createNotificationChannel(automaticCalls);
     nm.cancel(4);
     idleForeground();
+    prepareTalkStartSound();
     workers.execute(
         () -> {
           try {
@@ -138,6 +180,7 @@ public class RelayService extends Service {
                   status = "Available on your local network";
                   error = "";
                   discover();
+                  reconnectHub();
                   changed();
                 });
             while (running) {
@@ -186,6 +229,8 @@ public class RelayService extends Service {
       return START_NOT_STICKY;
     }
     if (i != null && "decline".equals(i.getAction())) end("Declined", true);
+    if (i != null && "dispatchDecline".equals(i.getAction())) declineDispatch();
+    if (i != null && "dispatchEnd".equals(i.getAction())) endDispatch();
     store.available(true);
     return START_STICKY;
   }
@@ -470,30 +515,527 @@ public class RelayService extends Service {
         .substring(0, Math.min(32, name.replaceAll("[\\p{Cntrl}]", "").length()));
   }
 
+  void reconnectHub() {
+    if (state.startsWith("dispatch")) endDispatch("Desktop manager changed");
+    long generation = ++hubGeneration;
+    if (hub != null) hub.close();
+    for (Channel channel : new ArrayList<>(channels))
+      if (!channel.hubFingerprint.isEmpty()) channel.close();
+    hub = null;
+    hubPeers.clear();
+    hubSupportsDispatch = false;
+    hubSupportsEmergency = false;
+    JSONObject config = store.hub();
+    if (!config.optBoolean("enabled")) {
+      hubStatus = "Desktop hub is not configured";
+      changed();
+      return;
+    }
+    if (identity == null || !running) {
+      hubStatus = "Become available to connect to the desktop";
+      changed();
+      return;
+    }
+    String version;
+    try { version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+    catch (Exception ignored) { version = "unknown"; }
+    hub = new HubClient(identity, store, port, version, new HubClient.Listener() {
+      public void status(String value) {
+        main.post(() -> {
+          if (generation != hubGeneration || !running) return;
+          hubStatus = value;
+          changed();
+        });
+      }
+
+      public void directory(JSONArray devices) {
+        main.post(() -> {
+          if (generation != hubGeneration || !running) return;
+          hubPeers.clear();
+          for (int i = 0; i < devices.length(); i++) {
+            JSONObject device = devices.optJSONObject(i);
+            if (device == null) continue;
+            String fp = device.optString("fingerprint");
+            if (!fp.matches("[A-F0-9]{64}") || fp.equals(identity.fingerprint)) continue;
+            hubPeers.put(fp, device);
+          }
+          changed();
+        });
+      }
+
+      public void offer(JSONObject offer) {
+        main.post(() -> acceptHubOffer(offer, generation));
+      }
+
+      public void capabilities(JSONArray capabilities) {
+        main.post(() -> {
+          if (generation != hubGeneration || !running) return;
+          hubSupportsDispatch = false;
+          hubSupportsEmergency = false;
+          for (int i = 0; i < capabilities.length(); i++) {
+            if (capabilities.optString(i).equals("dispatch-v1")) hubSupportsDispatch = true;
+            if (capabilities.optString(i).equals("emergency-v1")) hubSupportsEmergency = true;
+          }
+          changed();
+        });
+      }
+
+      public void event(JSONObject event) {
+        main.post(() -> {
+          if (generation == hubGeneration && running) hubEvent(event);
+        });
+      }
+    });
+    changed();
+  }
+
+  private void hubEvent(JSONObject event) {
+    String type = event.optString("type");
+    if (type.equals("dispatch_offer")) acceptDispatchOffer(event);
+    else if (type.equals("emergency")) receiveEmergency(event);
+    else if (type.equals("emergency_snapshot")) {
+      if (hub == null || !hubSupportsEmergency || !hub.fingerprint().equals(event.optString("hubId"))) return;
+      JSONArray ids = event.optJSONArray("activeIds");
+      if (ids == null || ids.length() > 64) return;
+      Set<String> activeIds = new HashSet<>();
+      for (int i = 0; i < ids.length(); i++) {
+        String id = ids.optString(i);
+        if (!id.matches("[a-fA-F0-9]{32}")) return;
+        activeIds.add(id);
+      }
+      store.reconcileEmergencies(hub.fingerprint(), activeIds);
+      if (!emergencyNotificationId.isEmpty() && !activeIds.contains(emergencyNotificationId)) {
+        getSystemService(NotificationManager.class).cancel(6);
+        emergencyNotificationId = "";
+      }
+      changed();
+    } else if (type.equals("emergency_resolved")) {
+      if (hub == null || !hub.fingerprint().equals(event.optString("by"))
+          || !event.optString("id").matches("[a-fA-F0-9]{32}")) return;
+      store.resolveEmergency(event.optString("id"), hub.fingerprint(), event.optLong("at", System.currentTimeMillis()));
+      if (event.optString("id").equals(emergencyNotificationId)) {
+        getSystemService(NotificationManager.class).cancel(6);
+        emergencyNotificationId = "";
+      }
+      changed();
+    } else if (type.equals("sos_ack")) {
+      if (event.optString("id").equals(pendingSosId)) {
+        sosStatus = "SOS confirmed by desktop at " + java.text.DateFormat.getTimeInstance().format(new Date());
+        pendingSosId = "";
+        changed();
+      }
+    } else if (type.equals("error")) {
+      String code = event.optString("code");
+      String message = Store.cleanMessage(event.optString("message", "Desktop refused the request"), 280);
+      if (code.startsWith("sos") || code.equals("invalid_sos")
+          || (!pendingSosId.isEmpty() && (code.equals("send_failed") || code.equals("unauthorized")))) {
+        sosStatus = "SOS not confirmed: " + message;
+        pendingSosId = "";
+      } else dispatchError = message;
+      changed();
+    } else if (type.equals("hub_disconnected")) {
+      if (state.startsWith("dispatch")) endDispatch("Desktop connection lost");
+      if (!pendingSosId.isEmpty()) {
+        sosStatus = "SOS not confirmed: desktop connection lost";
+        pendingSosId = "";
+      }
+      changed();
+    }
+  }
+
+  private void receiveEmergency(JSONObject event) {
+    if (hub == null || !hubSupportsEmergency || !event.optString("id").matches("[a-fA-F0-9]{32}")
+        || !event.optString("from").matches("[A-F0-9]{64}") || !event.optBoolean("active", true)) return;
+    boolean fresh = store.emergency(event, hub.fingerprint());
+    if (fresh) {
+      emergencyNotificationId = event.optString("id");
+      Notification notification = new Notification.Builder(this, "emergencies")
+          .setSmallIcon(R.drawable.ic_relay_status)
+          .setContentTitle("Relay emergency · " + safeName(event.optString("name", "Desktop")))
+          .setContentText(Store.cleanMessage(event.optString("message"), 280))
+          .setStyle(new Notification.BigTextStyle().bigText(Store.cleanMessage(event.optString("message"), 280)))
+          .setCategory(Notification.CATEGORY_EVENT).setVisibility(Notification.VISIBILITY_PRIVATE)
+          .setContentIntent(activity("open", 16)).setAutoCancel(true).build();
+      getSystemService(NotificationManager.class).notify(6, notification);
+    }
+    changed();
+  }
+
+  void dismissEmergency(String id) {
+    store.dismissEmergency(id);
+    if (id.equals(emergencyNotificationId)) {
+      getSystemService(NotificationManager.class).cancel(6);
+      emergencyNotificationId = "";
+    }
+    changed();
+  }
+
+  void sendSos(String message) {
+    if (hub == null || !hub.registered() || !hubSupportsEmergency) {
+      sosStatus = "Connect to an approved desktop with emergency support first";
+      changed(); return;
+    }
+    long now = SystemClock.elapsedRealtime();
+    if (now - lastSosAt < 30000) {
+      sosStatus = "Wait before sending another SOS";
+      changed(); return;
+    }
+    String id = UUID.randomUUID().toString().replace("-", "");
+    try {
+      hub.sendControl(Store.json("type", "sos", "id", id,
+          "message", Store.cleanMessage(message, 280)));
+      lastSosAt = now;
+      pendingSosId = id;
+      sosStatus = "Sending SOS to desktop…";
+      main.postDelayed(() -> {
+        if (id.equals(pendingSosId)) {
+          pendingSosId = "";
+          sosStatus = "SOS was not confirmed. Check the desktop connection.";
+          changed();
+        }
+      }, 20000);
+    } catch (IOException failure) { sosStatus = "SOS not sent: " + failure.getMessage(); }
+    changed();
+  }
+
+  private void acceptDispatchOffer(JSONObject offer) {
+    if (hub == null || !hub.registered() || !hubSupportsDispatch
+        || !hub.fingerprint().equals(offer.optString("from"))
+        || !offer.optString("id").matches("[a-fA-F0-9]{32}")) return;
+    String mode = offer.optString("mode");
+    if (!(mode.equals("call") || mode.equals("broadcast") || mode.equals("emergency"))) return;
+    if (dispatchOffer != null && offer.optString("id").equals(dispatchOffer.optString("id"))) return;
+    // The canonical emergency alert has its own ID and arrives separately on the control channel.
+    // A voice-session ID must never create a second persistent alert that cannot be resolved.
+    if (!state.equals("idle")) {
+      if (mode.equals("emergency") && !(state.startsWith("dispatch") && dispatchMode.equals("emergency")))
+        end("Interrupted by emergency dispatch", true);
+      else {
+        try { hub.sendControl(Store.json("type", "dispatch_decline", "id", offer.optString("id"), "reason", "Device is busy")); }
+        catch (IOException ignored) { }
+        return;
+      }
+    }
+    dispatchOffer = offer;
+    dispatchMode = mode;
+    dispatchName = safeName(offer.optString("name", "Relay dispatch"));
+    dispatchMessage = Store.cleanMessage(offer.optString("message"), 280);
+    dispatchError = "";
+    dispatchStartedAt = 0;
+    dispatchAudioStarted = false;
+    dispatchTalking = false;
+    dispatchRemoteTalking = false;
+    peerName = dispatchName;
+    connectionRoute = "Desktop dispatch · hub is a participant";
+    long generation = ++dispatchGeneration;
+    if (mode.equals("call")) {
+      state = "dispatchIncoming";
+      getSystemService(NotificationManager.class).notify(5,
+          new Notification.Builder(this, "calls").setSmallIcon(R.drawable.ic_relay_status)
+              .setContentTitle(dispatchName + " is calling").setContentText("Tap to answer desktop dispatch")
+              .setCategory(Notification.CATEGORY_CALL).setContentIntent(activity("open", 17))
+              .addAction(new Notification.Action.Builder(null, "Decline", service("dispatchDecline", 18)).build())
+              .addAction(new Notification.Action.Builder(null, "Answer", activity("dispatchAnswer", 19)).build())
+              .setOngoing(true).build());
+      main.postDelayed(() -> {
+        if (generation == dispatchGeneration && state.equals("dispatchIncoming")) declineDispatch();
+      }, 30000);
+    } else beginDispatch();
+    changed();
+  }
+
+  void answerDispatch() {
+    if (!state.equals("dispatchIncoming")) return;
+    if (!dispatchVisible) { dispatchError = "Open Relay to answer this desktop call"; changed(); return; }
+    beginDispatch();
+  }
+
+  void declineDispatch() {
+    if (!state.startsWith("dispatch")) return;
+    if (hub != null && dispatchOffer != null)
+      try { hub.sendControl(Store.json("type", "dispatch_decline", "id", dispatchOffer.optString("id"), "reason", "Declined on device")); }
+      catch (IOException ignored) { }
+    endDispatch("Desktop dispatch declined");
+  }
+
+  private void beginDispatch() {
+    final HubClient source = hub;
+    final JSONObject offer = dispatchOffer;
+    if (source == null || !source.registered() || offer == null) {
+      endDispatch("Desktop hub is unavailable"); return;
+    }
+    state = "dispatchConnecting";
+    getSystemService(NotificationManager.class).cancel(5);
+    final long generation = dispatchGeneration;
+    final ConnectionCancellation cancellation = new ConnectionCancellation();
+    dispatchCancellation = cancellation;
+    try {
+      hubWorkers.execute(() -> {
+        SSLSocket socket = null;
+        try {
+          socket = source.attachDispatch(offer, cancellation);
+          cancellation.track(socket);
+          final DispatchConnection connection = new DispatchConnection(socket, new DispatchConnection.Listener() {
+            public void frame(JSONObject frame) {
+              main.post(() -> { if (generation == dispatchGeneration) receiveDispatch(frame); });
+            }
+            public void closed(String reason) {
+              main.post(() -> { if (generation == dispatchGeneration) endDispatch(reason); });
+            }
+          });
+          final SSLSocket transport = socket;
+          main.post(() -> {
+            if (!running || generation != dispatchGeneration || cancellation.isCancelled()) {
+              connection.close(); cancellation.release(transport); return;
+            }
+            try {
+              dispatchConnection = connection;
+              dispatchFloor = new DispatchFloor(dispatchMode, identity.fingerprint, source.fingerprint());
+              dispatchFloor.visible(dispatchVisible);
+              dispatchAudioStarted = true;
+              activeForeground(false);
+              startAudio();
+              state = "dispatchActive";
+              dispatchStartedAt = System.currentTimeMillis();
+              dispatchReceivedAudioFrames = 0;
+              android.util.Log.i("Relay", "Desktop dispatch connected: " + dispatchMode);
+              dispatchCancellation = null;
+              cancellation.release(transport);
+              connection.start();
+              changed();
+            } catch (Exception failure) {
+              cancellation.release(transport);
+              connection.close();
+              endDispatch("Desktop audio could not start: " + failure.getMessage());
+            }
+          });
+        } catch (Exception failure) {
+          if (socket != null) try { socket.close(); } catch (IOException ignored) { }
+          main.post(() -> { if (generation == dispatchGeneration) endDispatch("Desktop dispatch failed: " + failure.getMessage()); });
+        }
+      });
+    } catch (RejectedExecutionException busy) { endDispatch("Desktop connection is busy"); }
+    changed();
+  }
+
+  private void receiveDispatch(JSONObject frame) {
+    if (!state.equals("dispatchActive") || dispatchConnection == null || dispatchFloor == null) return;
+    String type = frame.optString("type");
+    try {
+      if (type.equals("floor")) {
+        dispatchFloor.owner(frame.optString("owner"));
+        dispatchRemoteTalking = dispatchFloor.remoteTalking();
+        if (dispatchFloor.mayCapture()) startDispatchCapture();
+        else stopDispatchCapture();
+        changed();
+      } else if (type.equals("audio")) {
+        byte[] pcm = android.util.Base64.decode(frame.optString("data"), android.util.Base64.NO_WRAP);
+        if (pcm.length != 640 || !dispatchRemoteTalking) throw new IOException("Invalid desktop audio frame or floor");
+        dispatchReceivedAudioFrames++;
+        AudioTrack output = track;
+        if (output != null) workersAudio.execute(() -> {
+          try { output.write(pcm, 0, pcm.length); } catch (Exception ignored) { }
+        });
+      } else if (type.equals("end")) endDispatch(Store.cleanMessage(frame.optString("reason", "Desktop dispatch ended"), 160));
+      else if (type.equals("error")) endDispatch(Store.cleanMessage(frame.optString("message", "Desktop dispatch failed"), 160));
+      else throw new IOException("Unexpected desktop dispatch message");
+    } catch (Exception invalid) { endDispatch("Desktop dispatch protocol error"); }
+  }
+
+  void dispatchUiVisible(boolean visible) {
+    dispatchVisible = visible;
+    DispatchFloor floor = dispatchFloor;
+    if (floor != null) floor.visible(visible);
+    if (!visible && state.equals("dispatchActive")) {
+      dispatchTalk(false);
+      try { activeForeground(false); } catch (Exception ignored) { }
+    }
+  }
+
+  void dispatchTalk(boolean on) {
+    DispatchFloor floor = dispatchFloor;
+    DispatchConnection connection = dispatchConnection;
+    if (floor == null || connection == null || !state.equals("dispatchActive") || !dispatchMode.equals("call")) return;
+    if (!on) {
+      floor.hold(false);
+      stopDispatchCapture();
+      connection.send(Store.json("type", "talk", "on", false));
+      changed(); return;
+    }
+    if (!dispatchVisible || floor.held()) return;
+    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      dispatchError = "Allow microphone access in Android settings to talk"; changed(); return;
+    }
+    try { activeForeground(true); }
+    catch (Exception blocked) { dispatchError = "Keep the call screen open to talk"; changed(); return; }
+    floor.hold(true);
+    connection.send(Store.json("type", "talk", "on", true));
+    if (floor.mayCapture()) startDispatchCapture();
+    changed();
+  }
+
+  private void startDispatchCapture() {
+    final DispatchFloor floor = dispatchFloor;
+    final DispatchConnection connection = dispatchConnection;
+    if (floor == null || connection == null || !floor.mayCapture() || dispatchCapturing) return;
+    dispatchCapturing = true;
+    dispatchTalking = true;
+    final long generation = dispatchGeneration;
+    new Thread(() -> {
+      AudioRecord recorder = null;
+      boolean captureFailed = false;
+      try {
+        int minimum = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED)
+          throw new SecurityException("Microphone permission was revoked");
+        recorder = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16000,
+            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(minimum, 6400));
+        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) throw new IOException("Microphone unavailable");
+        synchronized (dispatchCaptureLock) {
+          dispatchMic = recorder;
+          if (!floor.mayCapture() || !dispatchTalking) return;
+          recorder.startRecording();
+        }
+        byte[] pcm = new byte[640];
+        while (dispatchTalking && floor.mayCapture() && dispatchConnection == connection) {
+          int offset = 0;
+          while (offset < pcm.length && dispatchTalking && floor.mayCapture()) {
+            int count = recorder.read(pcm, offset, pcm.length - offset);
+            if (count <= 0) break;
+            offset += count;
+          }
+          if (offset == pcm.length && dispatchTalking && floor.mayCapture())
+            connection.send(Store.json("type", "audio", "data",
+                android.util.Base64.encodeToString(pcm, android.util.Base64.NO_WRAP)));
+        }
+      } catch (Exception failure) {
+        captureFailed = true;
+        main.post(() -> {
+          if (generation == dispatchGeneration) { dispatchError = "Microphone error: " + failure.getMessage(); changed(); }
+        });
+      } finally {
+        if (recorder != null) {
+          try { recorder.stop(); } catch (Exception ignored) { }
+          recorder.release();
+        }
+        if (dispatchMic == recorder) dispatchMic = null;
+        final boolean failed = captureFailed;
+        main.post(() -> {
+          if (generation == dispatchGeneration) {
+            dispatchTalking = false;
+            dispatchCapturing = false;
+            if (failed) {
+              floor.hold(false);
+              connection.send(Store.json("type", "talk", "on", false));
+            } else if (floor.mayCapture() && dispatchConnection == connection) startDispatchCapture();
+            else if (!floor.held()) connection.send(Store.json("type", "talk", "on", false));
+            changed();
+          }
+        });
+      }
+    }, "relay-dispatch-microphone").start();
+    changed();
+  }
+
+  private void stopDispatchCapture() {
+    synchronized (dispatchCaptureLock) {
+      dispatchTalking = false;
+      AudioRecord microphone = dispatchMic;
+      if (microphone != null) try { microphone.stop(); } catch (Exception ignored) { }
+    }
+  }
+
+  void endDispatch() { endDispatch("Desktop dispatch ended on device"); }
+
+  private void endDispatch(String reason) {
+    if (!state.startsWith("dispatch") && dispatchConnection == null && dispatchOffer == null) return;
+    android.util.Log.i("Relay", "Desktop dispatch ended: " + dispatchMode
+        + "; receivedAudioFrames=" + dispatchReceivedAudioFrames + "; reason=" + Store.cleanMessage(reason, 120));
+    ++dispatchGeneration;
+    stopDispatchCapture();
+    dispatchCapturing = false;
+    dispatchRemoteTalking = false;
+    if (dispatchFloor != null) { dispatchFloor.hold(false); dispatchFloor.visible(false); }
+    dispatchFloor = null;
+    if (dispatchCancellation != null) dispatchCancellation.close();
+    dispatchCancellation = null;
+    DispatchConnection connection = dispatchConnection;
+    dispatchConnection = null;
+    if (connection != null) {
+      if (dispatchMode.equals("call")) connection.send(Store.json("type", "talk", "on", false));
+      connection.send(Store.json("type", "end", "reason", Store.cleanMessage(reason, 160)));
+      connection.closeAfterWrite();
+      main.postDelayed(connection::close, 1000);
+    }
+    dispatchOffer = null;
+    dispatchError = reason;
+    getSystemService(NotificationManager.class).cancel(5);
+    state = "idle";
+    if (dispatchAudioStarted) releaseCallAudio();
+    dispatchAudioStarted = false;
+    changed();
+  }
+
+  private void acceptHubOffer(JSONObject offer, long generation) {
+    if (!running || generation != hubGeneration || hub == null || !hub.registered()
+        || !state.equals("idle") || hubOfferPending || channels.size() >= 8
+        || !handshakes.tryAcquire()) return;
+    hubOfferPending = true;
+    final HubClient source = hub;
+    try {
+      hubWorkers.execute(() -> {
+        Channel channel = null;
+        try {
+          TlsTunnel tunnel = source.attach(offer);
+          channel = new Channel(tunnel, offer.optString("from"), source.fingerprint());
+          final Channel accepted = channel;
+          main.post(() -> {
+            if (!running || generation != hubGeneration || !state.equals("idle")) {
+              accepted.close();
+              return;
+            }
+            channels.add(accepted);
+            accepted.start();
+          });
+        } catch (Exception failure) {
+          if (channel != null) channel.close();
+          android.util.Log.w("Relay", "Relayed peer rejected", failure);
+        } finally {
+          handshakes.release();
+          main.post(() -> hubOfferPending = false);
+        }
+      });
+    } catch (RejectedExecutionException busy) {
+      handshakes.release();
+      hubOfferPending = false;
+    }
+  }
+
+  void connectPeer(JSONObject peer, boolean pair) {
+    connectMode(peer, peer.optString("fingerprint"), pair ? "pair" : "call");
+  }
+
   void connect(String host, int targetPort, String pin, boolean pair) {
     connectMode(host, targetPort, pin, pair ? "pair" : "call");
   }
 
   void requestAutomatic(JSONObject contact) {
-    connectMode(
-        contact.optString("host"),
-        contact.optInt("port", 52743),
-        contact.optString("fingerprint"),
-        "auto_request");
+    connectMode(contact, contact.optString("fingerprint"), "auto_request");
   }
 
   void revokeAutomatic(JSONObject contact) {
     store.automatic(contact.optString("fingerprint"), false);
     changed();
     if (state.equals("idle"))
-      connectMode(
-          contact.optString("host"),
-          contact.optInt("port", 52743),
-          contact.optString("fingerprint"),
-          "auto_revoke");
+      connectMode(contact, contact.optString("fingerprint"), "auto_revoke");
   }
 
   void connectMode(String host, int targetPort, String pin, String kind) {
+    connectMode(Store.json("host", host, "port", targetPort, "fingerprint", pin), pin, kind);
+  }
+
+  void connectMode(JSONObject peer, String pin, String kind) {
     final boolean pair = kind.equals("pair"), setup = !kind.equals("call");
     if (identity == null) {
       problem("Receiver is still starting");
@@ -509,29 +1051,55 @@ public class RelayService extends Service {
       return;
     }
     final long attempt = ++connectionAttempt;
+    final ConnectionCancellation cancellation = new ConnectionCancellation();
+    pendingConnection = cancellation;
+    final JSONObject directory = hubPeers.get(clean);
+    final String host = peer.optString("host");
+    final int targetPort = peer.optInt("port", 52743);
+    final HubClient selectedHub = hub;
     state = pair ? "connectingPair" : setup ? "connectingAuto" : "connectingCall";
     peerName = "Connecting…";
     error = "";
     changed();
     workers.execute(
         () -> {
-          SSLSocket s = null;
+          Channel connected = null;
           try {
-            InetAddress address = Lan.parse(host);
-            if (targetPort < 1024 || targetPort > 65535) throw new Exception("Invalid local port");
-            Socket raw = new Socket();
-            raw.connect(new InetSocketAddress(address, targetPort), 6000);
-            s =
-                (SSLSocket)
-                    identity.context.getSocketFactory().createSocket(raw, host, targetPort, true);
-            s.setEnabledProtocols(new String[] {"TLSv1.2"});
-            s.setEnabledCipherSuites(
-                new String[] {
-                  "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
-                });
-            s.setSoTimeout(8000);
-            s.startHandshake();
-            Channel c = new Channel(s);
+            Channel direct = null;
+            Exception reachability = null;
+            List<JSONObject> endpoints = directEndpoints(peer, directory);
+            for (JSONObject endpoint : endpoints) {
+              if (!running || attempt != connectionAttempt)
+                throw new CancellationException("Connection cancelled");
+              try {
+                direct = openDirect(endpoint.optString("host"), endpoint.optInt("port", targetPort), attempt,
+                    cancellation);
+                // Never fall back to a relay after a certificate or pairing mismatch.
+                if (!direct.fp.startsWith(clean) || (!pair && store.contact(direct.fp) == null)) {
+                  direct.close();
+                  throw new SSLPeerUnverifiedException("Pairing key does not match this device. Check its screen.");
+                }
+                break;
+              } catch (SSLException authentication) {
+                throw authentication;
+              } catch (Exception unreachable) {
+                reachability = unreachable;
+              }
+            }
+            if (direct == null) {
+              if (!running || attempt != connectionAttempt)
+                throw new CancellationException("Connection cancelled");
+              if (selectedHub == null || !selectedHub.registered() || clean.length() != 64
+                  || directory == null || !directory.optBoolean("online"))
+                throw reachability != null ? reachability
+                    : new IOException("No approved direct route or online desktop relay is available");
+              if (!pair && store.contact(clean) == null)
+                throw new SSLPeerUnverifiedException("Pair these devices first");
+              direct = new Channel(selectedHub.open(clean, pair ? "pair" : "call", cancellation), clean,
+                  selectedHub.fingerprint());
+            }
+            final Channel c = direct;
+            connected = c;
             if (!c.fp.startsWith(clean) || (!pair && store.contact(c.fp) == null))
               throw new Exception(
                   "Pairing key does not match this device. Check the key on its screen.");
@@ -543,9 +1111,11 @@ public class RelayService extends Service {
                     return;
                   }
                   session = c;
+                  if (pendingConnection == cancellation) pendingConnection = null;
+                  connectionRoute = c.route;
                   peerFp = c.fp;
                   JSONObject contact = store.contact(c.fp);
-                  peerName = contact == null ? host : contact.optString("name");
+                  peerName = contact == null ? safeName(peer.optString("name", host)) : contact.optString("name");
                   direction = "Outgoing";
                   state = pair ? "pairOutgoing" : setup ? "autoOutgoing" : "calling";
                   callTime = System.currentTimeMillis();
@@ -568,20 +1138,76 @@ public class RelayService extends Service {
                   changed();
                 });
           } catch (Exception e) {
-            if (s != null)
-              try {
-                s.close();
-              } catch (Exception ignored) {
-              }
+            if (connected != null) connected.close();
             main.post(
                 () -> {
                   if (attempt == connectionAttempt && state.startsWith("connecting")) {
+                    if (pendingConnection == cancellation) pendingConnection = null;
                     state = "idle";
                     problem("Connection failed: " + e.getMessage());
                   }
                 });
           }
         });
+  }
+
+  private List<JSONObject> directEndpoints(JSONObject peer, JSONObject directory) {
+    List<JSONObject> result = new ArrayList<>();
+    addEndpoint(result, peer.optString("host"), peer.optInt("port", 52743));
+    JSONArray known = peer.optJSONArray("directEndpoints");
+    if (known != null)
+      for (int i = 0; i < known.length(); i++) {
+        JSONObject endpoint = known.optJSONObject(i);
+        if (endpoint != null)
+          addEndpoint(result, endpoint.optString("host"), endpoint.optInt("port", 52743));
+      }
+    JSONObject reported = directory == null ? peer : directory;
+    JSONArray addresses = reported.optJSONArray("addresses");
+    if (addresses != null)
+      for (int i = 0; i < addresses.length(); i++)
+        addEndpoint(result, addresses.optString(i), reported.optInt("port", 52743));
+    return result;
+  }
+
+  private void addEndpoint(List<JSONObject> endpoints, String host, int port) {
+    if (endpoints.size() >= 3 || port < 1024 || port > 65535) return;
+    try {
+      Lan.parse(host);
+      for (JSONObject existing : endpoints)
+        if (host.equals(existing.optString("host")) && port == existing.optInt("port")) return;
+      endpoints.add(Store.json("host", host, "port", port));
+    } catch (Exception ignored) { }
+  }
+
+  private Channel openDirect(String host, int port, long attempt, ConnectionCancellation cancellation) throws Exception {
+    InetAddress address = Lan.parse(host);
+    Socket raw = new Socket();
+    cancellation.track(raw);
+    SSLSocket socket = null;
+    try {
+      if (!running || attempt != connectionAttempt)
+        throw new CancellationException("Connection cancelled");
+      raw.connect(new InetSocketAddress(address, port), 3000);
+      socket = (SSLSocket) identity.context.getSocketFactory().createSocket(raw, host, port, true);
+      cancellation.track(socket);
+      socket.setEnabledProtocols(new String[] {"TLSv1.2"});
+      socket.setEnabledCipherSuites(new String[] {
+          "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"});
+      socket.setSoTimeout(8000);
+      socket.startHandshake();
+      return new Channel(socket);
+    } catch (Exception failure) {
+      try { if (socket == null) raw.close(); else socket.close(); } catch (Exception ignored) { }
+      throw failure;
+    } finally {
+      cancellation.release(raw);
+      cancellation.release(socket);
+    }
+  }
+
+  private void savePeer(Channel channel, String name) {
+    store.saveContact(channel.fp, name, channel.host, channel.remotePort);
+    if (!channel.hubFingerprint.isEmpty()) store.relayRoute(channel.fp, channel.hubFingerprint);
   }
 
   void receive(Channel c, JSONObject j) {
@@ -616,6 +1242,7 @@ public class RelayService extends Service {
       }
       if (type.equals("pair")) lastPairRequest = SystemClock.elapsedRealtime();
       session = c;
+      connectionRoute = c.route;
       peerFp = c.fp;
       peerName = safeName(j.optString("name", "Local device"));
       direction = "Incoming";
@@ -693,7 +1320,7 @@ public class RelayService extends Service {
         break;
       case "pair_ok":
         if (state.equals("pairOutgoing")) {
-          store.saveContact(c.fp, safeName(j.optString("name", peerName)), c.host, c.remotePort);
+          savePeer(c, safeName(j.optString("name", peerName)));
           c.send(Store.json("type", "pair_ack"));
           end("Paired", false);
           status = "Device paired. Ready to call.";
@@ -701,7 +1328,7 @@ public class RelayService extends Service {
         break;
       case "pair_ack":
         if (state.equals("pairApproved")) {
-          store.saveContact(c.fp, peerName, c.host, c.remotePort);
+          savePeer(c, peerName);
           end("Paired", false);
           status = "Device paired. Ready to call.";
         }
@@ -802,6 +1429,43 @@ public class RelayService extends Service {
           new ArrayBlockingQueue<>(8),
           new ThreadPoolExecutor.DiscardOldestPolicy());
 
+  void prepareTalkStartSound() {
+    try {
+      talkStartSounds =
+          new SoundPool.Builder()
+              .setMaxStreams(1)
+              .setAudioAttributes(
+                  new AudioAttributes.Builder()
+                      .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                      .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                      .build())
+              .build();
+      talkStartSounds.setOnLoadCompleteListener(
+          (pool, sample, status) -> {
+            if (pool == talkStartSounds && sample == talkStartSample) {
+              talkStartLoaded = status == 0;
+              if (!talkStartLoaded)
+                android.util.Log.w("Relay", "Talk-start sound could not load: " + status);
+            }
+          });
+      talkStartSample = talkStartSounds.load(this, R.raw.talk_start, 1);
+    } catch (Exception e) {
+      android.util.Log.w("Relay", "Talk-start sound unavailable", e);
+    }
+  }
+
+  void playTalkStartSound() {
+    if (talkStartSounds == null || !talkStartLoaded) return;
+    AudioManager audio = getSystemService(AudioManager.class);
+    NotificationManager notifications = getSystemService(NotificationManager.class);
+    if (audio.getRingerMode() != AudioManager.RINGER_MODE_NORMAL
+        || notifications.getCurrentInterruptionFilter()
+            != NotificationManager.INTERRUPTION_FILTER_ALL
+        || audio.getStreamVolume(AudioManager.STREAM_RING) == 0
+        || audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL) == 0) return;
+    talkStartStream = talkStartSounds.play(talkStartSample, 1f, 1f, 1, 0, 1f);
+  }
+
   void notifyTurnEnd() {
     AudioTrack output = track;
     if (output == null || (!store.turnEndBeep() && !store.turnEndVibration())) return;
@@ -899,6 +1563,7 @@ public class RelayService extends Service {
 
   void startAudio() throws Exception {
     AudioManager am = getSystemService(AudioManager.class);
+    final long focusGeneration = ++audioFocusGeneration;
     focus =
         new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
             .setAudioAttributes(
@@ -910,7 +1575,9 @@ public class RelayService extends Service {
                 change -> {
                   if (change == AudioManager.AUDIOFOCUS_LOSS
                       || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
-                    main.post(() -> end("Audio interrupted", true));
+                    main.post(() -> {
+                      if (focusGeneration == audioFocusGeneration) end("Audio interrupted", true);
+                    });
                 },
                 main)
             .build();
@@ -1009,6 +1676,7 @@ public class RelayService extends Service {
     capturing = true;
     Channel c = session;
     c.send(Store.json("type", "talk", "on", true));
+    playTalkStartSound();
     new Thread(
             () -> {
               AudioRecord a = null;
@@ -1138,11 +1806,16 @@ public class RelayService extends Service {
   }
 
   void end(String result, boolean send) {
+    if (state.startsWith("dispatch")) { endDispatch(result); return; }
     android.util.Log.i("Relay", "Call ended: " + result + "; state=" + state);
+    if (talkStartSounds != null) talkStartSounds.stop(talkStartStream);
     stopAutomaticAlert();
     automaticAlertPending = false;
     getSystemService(NotificationManager.class).cancel(4);
     connectionAttempt++;
+    ConnectionCancellation pending = pendingConnection;
+    pendingConnection = null;
+    if (pending != null) pending.close();
     Channel c = session;
     if (c == null) {
       state = "idle";
@@ -1186,6 +1859,12 @@ public class RelayService extends Service {
     remoteRecording = false;
     remoteTalking = false;
     acceptedAt = 0;
+    releaseCallAudio();
+    changed();
+  }
+
+  private void releaseCallAudio() {
+    ++audioFocusGeneration;
     workersAudio.getQueue().clear();
     AudioTrack a = track;
     track = null;
@@ -1208,7 +1887,6 @@ public class RelayService extends Service {
       focus = null;
     }
     if (running) idleForeground();
-    changed();
   }
 
   final Runnable tick =
@@ -1233,7 +1911,15 @@ public class RelayService extends Service {
 
   public void onDestroy() {
     running = false;
+    ++hubGeneration;
+    if (hub != null) hub.close();
+    hubWorkers.shutdownNow();
     end("Receiver stopped", true);
+    if (talkStartSounds != null) {
+      talkStartSounds.release();
+      talkStartSounds = null;
+      talkStartLoaded = false;
+    }
     main.removeCallbacksAndMessages(null);
     for (Channel c : channels) c.close();
     if (server != null)
@@ -1259,8 +1945,8 @@ public class RelayService extends Service {
   }
 
   final class Channel {
-    final SSLSocket socket;
-    final String fp, host;
+    final Closeable connection;
+    final String fp, host, route, hubFingerprint;
     final DataInputStream in;
     final DataOutputStream out;
     final ArrayBlockingQueue<JSONObject> queue = new ArrayBlockingQueue<>(128);
@@ -1270,13 +1956,29 @@ public class RelayService extends Service {
     int receivedAudioFrames = 0, remotePort = 52743;
 
     Channel(SSLSocket s) throws Exception {
-      socket = s;
+      connection = s;
       host = s.getInetAddress().getHostAddress();
       fp = Identity.fingerprint(s.getSession().getPeerCertificates()[0]);
+      route = Lan.sameSubnet(s.getInetAddress()) ? "Direct" : "Routed direct";
+      hubFingerprint = "";
       s.setSoTimeout(20000);
       s.setTcpNoDelay(true);
       in = new DataInputStream(s.getInputStream());
-      out = new DataOutputStream(s.getOutputStream());
+      out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+    }
+
+    Channel(TlsTunnel tunnel, String peerFingerprint, String hubFingerprint) throws Exception {
+      if (!tunnel.fingerprint.equals(peerFingerprint)) {
+        tunnel.close();
+        throw new SSLPeerUnverifiedException("Relayed peer identity mismatch");
+      }
+      connection = tunnel;
+      fp = tunnel.fingerprint;
+      host = "";
+      route = "Via desktop hub";
+      this.hubFingerprint = hubFingerprint;
+      in = new DataInputStream(tunnel.input());
+      out = new DataOutputStream(new BufferedOutputStream(tunnel.output()));
     }
 
     void start() {
@@ -1361,7 +2063,7 @@ public class RelayService extends Service {
       closed = true;
       channels.remove(this);
       try {
-        socket.close();
+        connection.close();
       } catch (Exception ignored) {
       }
       main.post(

@@ -11,34 +11,40 @@ final class RelayStyle {
     return Math.round(n * c.getResources().getDisplayMetrics().density);
   }
 
+  /** Flat fill with cut top-left and bottom-right corners. White (and INK) cards; BG is soft gray. */
   static Drawable surface(Context c, int color, int radius) {
-    if (color == Color.WHITE
-        || color == MainActivity.BG
-        || color == MainActivity.INK
-        || color == 0xff31544e
-        || color == 0xffe6ebe3) {
-      return new CosmicDrawable.Glass(dp(c, radius), color == MainActivity.INK, false);
-    }
-    int end =
-        color == MainActivity.INK ? 0xff493969 : color == MainActivity.LIME ? 0xffb5e6d9 : color;
-    GradientDrawable g =
-        new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[] {color, end});
-    g.setCornerRadius(dp(c, radius));
-    g.setStroke(dp(c, 1), 0x40f5eafa);
-    return g;
+    int fill =
+        color == Color.WHITE || color == MainActivity.INK
+            ? MainActivity.CARD
+            : color == MainActivity.BG ? MainActivity.SOFT : color;
+    int cut = dp(c, radius >= 20 ? 14 : radius >= 14 ? 9 : 7);
+    return new CosmicDrawable.Chamfer(fill, cut, MainActivity.CUT);
   }
 
-  static void shadow(View v, int depth) {
-    v.setElevation(dp(v.getContext(), depth));
-    v.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND);
-    if (android.os.Build.VERSION.SDK_INT >= 28) {
-      v.setOutlineAmbientShadowColor(0xff0b0922);
-      v.setOutlineSpotShadowColor(0xff0b0922);
+  /** System bar backgrounds; dark icons in the light theme, light icons in the dark theme. */
+  @SuppressWarnings("deprecation")
+  static void lightSystemBars(android.view.Window w, int color) {
+    w.setStatusBarColor(color);
+    w.setNavigationBarColor(color);
+    if (android.os.Build.VERSION.SDK_INT >= 30) {
+      int light =
+          android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+              | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+      // getDecorView() creates the window's views; getInsetsController() crashes without them.
+      android.view.WindowInsetsController bars = w.getDecorView().getWindowInsetsController();
+      if (bars != null) bars.setSystemBarsAppearance(MainActivity.dark ? 0 : light, light);
+    } else {
+      w.getDecorView()
+          .setSystemUiVisibility(
+              MainActivity.dark
+                  ? 0
+                  : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     }
   }
 
   static String iconFor(String label) {
     String s = label.toLowerCase(java.util.Locale.ROOT);
+    if (s.equals("sos") || s.contains("emergency")) return "alert";
     if (s.equals("×") || s.contains("cancel") || s.equals("close")) return "close";
     if (s.contains("delete") || s.contains("forget")) return "delete";
     if (s.contains("end call") || s.contains("decline")) return "end";
@@ -180,12 +186,22 @@ final class RelayStyle {
           path(c, 12, 3, 20, 6, 19, 14, 16, 18, 12, 21, 8, 18, 5, 14, 4, 6, 12, 3);
           path(c, 8, 12, 11, 15, 16, 10);
           break;
+        case "alert":
+          path(c, 12, 3, 22, 20, 2, 20, 12, 3);
+          path(c, 12, 9, 12, 14);
+          c.drawCircle(12, 17, .6f, p);
+          break;
         case "close":
           path(c, 6, 6, 18, 18);
           path(c, 18, 6, 6, 18);
           break;
         case "more":
           for (int i = 0; i < 3; i++) c.drawCircle(5 + i * 7, 12, 1, p);
+          break;
+        case "menu":
+          path(c, 5, 7, 19, 7);
+          path(c, 5, 12, 19, 12);
+          path(c, 5, 17, 13, 17);
           break;
         case "check":
           path(c, 5, 12, 10, 17, 19, 7);

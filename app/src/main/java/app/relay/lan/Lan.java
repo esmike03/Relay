@@ -4,6 +4,16 @@ import java.net.*;
 import java.util.*;
 
 final class Lan {
+  private static volatile List<NetworkPolicy.Cidr> approved = Collections.emptyList();
+
+  static void approvedCidrs(String value) {
+    approved = NetworkPolicy.parseCidrs(value);
+  }
+
+  static InetAddress privateAddress(String host) {
+    return NetworkPolicy.privateAddress(host);
+  }
+
   static List<InterfaceAddress> interfaces() throws SocketException {
     List<InterfaceAddress> out = new ArrayList<>();
     Enumeration<NetworkInterface> it = NetworkInterface.getNetworkInterfaces();
@@ -27,7 +37,10 @@ final class Lan {
   static boolean allowed(InetAddress remote) {
     if (!(remote instanceof Inet4Address) || !remote.isSiteLocalAddress()) return false;
     try {
-      for (InterfaceAddress a : interfaces()) {
+      List<InterfaceAddress> local = interfaces();
+      for (InterfaceAddress a : local)
+        if (remote.equals(a.getAddress())) return false;
+      for (InterfaceAddress a : local) {
         int prefix = a.getNetworkPrefixLength();
         if (prefix < 8 || prefix > 30) continue;
         byte[] x = a.getAddress().getAddress(), y = remote.getAddress();
@@ -40,18 +53,33 @@ final class Lan {
         }
         if (match && !remote.equals(a.getAddress())) return true;
       }
+      if (!local.isEmpty())
+        for (NetworkPolicy.Cidr range : approved) if (range.contains(remote)) return true;
     } catch (Exception ignored) {
     }
     return false;
   }
 
   static InetAddress parse(String host) throws Exception {
-    if (!host.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}"))
-      throw new Exception("Enter a local IPv4 address, such as 192.168.0.110");
-    InetAddress a = InetAddress.getByName(host);
+    InetAddress a = privateAddress(host);
     if (!allowed(a))
-      throw new Exception("Device must be on the same local Wi-Fi or Ethernet subnet");
+      throw new Exception("Device must be on your local subnet or an explicitly approved routed subnet");
     return a;
+  }
+
+  static boolean sameSubnet(InetAddress remote) {
+    try {
+      for (InterfaceAddress local : interfaces()) {
+        int prefix = local.getNetworkPrefixLength();
+        if (prefix >= 1 && prefix <= 32) {
+          int mask = (int) (0xffffffffL << (32 - prefix));
+          if ((NetworkPolicy.integer(local.getAddress()) & mask)
+              == (NetworkPolicy.integer(remote) & mask)) return true;
+        }
+      }
+    } catch (Exception ignored) {
+    }
+    return false;
   }
 
   static String address() {
